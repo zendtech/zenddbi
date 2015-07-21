@@ -1369,7 +1369,7 @@ built-in operations for atomic memory access */
 ib_mutex_t	monitor_mutex;
 
 /** Key to register monitor_mutex with performance schema */
-UNIV_INTERN mysql_pfs_key_t	monitor_mutex_key;
+//UNIV_INTERN mysql_pfs_key_t	monitor_mutex_key;
 
 /****************************************************************//**
 Initialize the monitor subsystem. */
