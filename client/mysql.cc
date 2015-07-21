@@ -1039,6 +1039,7 @@ static const char *embedded_server_groups[]=
  HIST_ENTRY is defined for libedit, but not for the real readline
  Need to redefine it for real readline to find it
 */
+#define HAVE_HIST_ENTRY
 #if !defined(HAVE_HIST_ENTRY)
 typedef struct _hist_entry {
   const char      *line;
