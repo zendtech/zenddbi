@@ -65,6 +65,7 @@
 #include "lex_token.h"
 
 /* this is to get the bison compilation windows warnings out */
+#define _MSC_VER
 #ifdef _MSC_VER
 /* warning C4065: switch statement contains 'default' but no 'case' labels */
 #pragma warning (disable : 4065)
@@ -997,7 +998,8 @@ bool LEX::set_bincmp(CHARSET_INFO *cs, bool bin)
 bool my_yyoverflow(short **a, YYSTYPE **b, ulong *yystacksize);
 %}
 
-%pure_parser                                    /* We have threads */
+/*Use pure-parser instead of deprecated pure_parser - David Lowes */
+%pure-parser                                    /* We have threads */
 %parse-param { THD *thd }
 %lex-param { THD *thd }
 /*
