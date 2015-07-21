@@ -662,6 +662,7 @@
 #define __STDC_FORMAT_MACROS
 #endif
 
+#define __STDC_FORMAT_MACROS
 /*
   stat structure (from <sys/stat.h>) is conditionally defined
   to have different layout and size depending on the defined macros.
