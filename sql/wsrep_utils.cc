@@ -398,7 +398,7 @@ extern char* my_bind_addr_str;
 
 size_t wsrep_guess_ip (char* buf, size_t buf_len)
 {
-  size_t ip_len = 0;
+  size_t iplen = 0;
 
   if (my_bind_addr_str && my_bind_addr_str[0] != '\0')
   {
@@ -421,18 +421,18 @@ size_t wsrep_guess_ip (char* buf, size_t buf_len)
     const char* const colon_ptr = strchr(wsrep_node_address, ':');
 
     if (colon_ptr)
-      ip_len = colon_ptr - wsrep_node_address;
+      iplen = colon_ptr - wsrep_node_address;
     else
-      ip_len = strlen(wsrep_node_address);
+      iplen = strlen(wsrep_node_address);
 
-    if (ip_len >= buf_len) {
-      WSREP_WARN("default_ip(): buffer too short: %zu <= %zd", buf_len, ip_len);
+    if (iplen >= buf_len) {
+      WSREP_WARN("default_ip(): buffer too short: %zu <= %zd", buf_len, iplen);
       return 0;
     }
 
-    memcpy (buf, wsrep_node_address, ip_len);
-    buf[ip_len] = '\0';
-    return ip_len;
+    memcpy (buf, wsrep_node_address, iplen);
+    buf[iplen] = '\0';
+    return iplen;
   }
 
   /*

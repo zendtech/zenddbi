@@ -663,11 +663,11 @@ int wsrep_init()
         const char* const colon= strrchr(node_addr, ':');
         if (strchr(node_addr, ':') == colon) // 1 or 0 ':'
         {
-          size_t const ip_len= colon ? colon - node_addr : node_addr_len;
-          if (ip_len + 7 /* :55555\0 */ < inc_addr_max)
+          size_t const iplen= colon ? colon - node_addr : node_addr_len;
+          if (iplen + 7 /* :55555\0 */ < inc_addr_max)
           {
-            memcpy (inc_addr, node_addr, ip_len);
-            snprintf(inc_addr + ip_len, inc_addr_max - ip_len, ":%u",
+            memcpy (inc_addr, node_addr, iplen);
+            snprintf(inc_addr + iplen, inc_addr_max - iplen, ":%u",
                      (int)mysqld_port);
           }
           else
