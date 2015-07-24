@@ -2474,6 +2474,7 @@ int Field_decimal::store(double nr)
     return 1;
   }
   
+  using namespace std;
   if (!isfinite(nr)) // Handle infinity as special case
   {
     overflow(nr < 0.0);

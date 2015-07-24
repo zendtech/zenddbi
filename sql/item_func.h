@@ -270,6 +270,7 @@ public:
   */
   inline double check_float_overflow(double value)
   {
+    using namespace std;
     return isfinite(value) ? value : raise_float_overflow();
   }
   /**
