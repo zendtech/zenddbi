@@ -837,7 +837,6 @@ inline unsigned long long my_double2ulonglong(double d)
 #define M_LN2 0.69314718055994530942
 #endif
 
-#define HAVE_LOG2
 #ifndef HAVE_LOG2
 /*
   This will be slightly slower and perhaps a tiny bit less accurate than
