@@ -662,6 +662,15 @@
 #define __STDC_FORMAT_MACROS
 #endif
 
+#ifdef _OS400
+/*
+ AIX includes inttypes.h from sys/types.h
+ Explicitly request format macros before the first inclusion of inttypes.h
+*/
+#define __STDC_FORMAT_MACROS
+#endif
+
+
 #define __STDC_FORMAT_MACROS
 /*
   stat structure (from <sys/stat.h>) is conditionally defined
