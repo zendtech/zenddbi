@@ -10,6 +10,7 @@
 errmsg.sys
 typescript
 CMakeCache.txt
+CopyOfCMakeCache.txt
 CMakeFiles/
 MakeFile
 install_manifest.txt
