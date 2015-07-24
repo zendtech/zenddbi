@@ -510,7 +510,7 @@ PTABDEF OEMDEF::GetXdef(PGLOBAL g)
     } // endif getdef
 #else   // !__WIN__
   const char *error = NULL;
-  Dl_info dl_info;
+  //Dl_info dl_info;
     
 #if 0  // Don't know what all this stuff does
   // The OEM lib must retrieve exported CONNECT variables
@@ -529,7 +529,7 @@ PTABDEF OEMDEF::GetXdef(PGLOBAL g)
 #endif // 0
 
   // Is the library already loaded?
-  if (!Hdll && !(Hdll = dlopen(soname, RTLD_NOLOAD)))
+//  if (!Hdll && !(Hdll = dlopen(soname, RTLD_NOLOAD)))
     // Load the desired shared library
     if (!(Hdll = dlopen(soname, RTLD_LAZY))) {
       error = dlerror();
