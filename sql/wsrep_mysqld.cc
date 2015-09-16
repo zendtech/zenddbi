@@ -618,6 +618,7 @@ int wsrep_init()
             wsrep->provider_vendor,  sizeof(provider_vendor) - 1);
   }
 
+  /* Initialize node address */
   char node_addr[512]= { 0, };
   size_t const node_addr_max= sizeof(node_addr) - 1;
   if (!wsrep_node_address || !strcmp(wsrep_node_address, ""))
@@ -635,86 +636,81 @@ int wsrep_init()
     strncpy(node_addr, wsrep_node_address, node_addr_max);
   }
 
+  /* Initialize node's incoming address */
   char inc_addr[512]= { 0, };
   size_t const inc_addr_max= sizeof (inc_addr);
+
+  /*
+    In case wsrep_node_incoming_address is either not set or set to AUTO,
+    we need to use mysqld's my_bind_addr_str:mysqld_port, lastly fallback
+    to wsrep_node_address' value if mysqld's bind-address is not set either.
+  */
   if ((!wsrep_node_incoming_address ||
        !strcmp (wsrep_node_incoming_address, WSREP_NODE_INCOMING_AUTO)))
   {
+    bool is_ipv6= false;
     unsigned int my_bind_ip= INADDR_ANY; // default if not set
+
     if (my_bind_addr_str && strlen(my_bind_addr_str))
     {
-      my_bind_ip= wsrep_check_ip(my_bind_addr_str);
+      my_bind_ip= wsrep_check_ip(my_bind_addr_str, &is_ipv6);
     }
 
     if (INADDR_ANY != my_bind_ip)
     {
+      /*
+        If its a not a valid address, leave inc_addr as empty string. mysqld
+        is not listening for client connections on network interfaces.
+      */
       if (INADDR_NONE != my_bind_ip && INADDR_LOOPBACK != my_bind_ip)
       {
-        snprintf(inc_addr, inc_addr_max, "%s:%u",
-                 my_bind_addr_str, (int)mysqld_port);
-      } // else leave inc_addr an empty string - mysqld is not listening for
-        // client connections on network interfaces.
+        const char *fmt= (is_ipv6) ? "[%s]:%u" : "%s:%u";
+        snprintf(inc_addr, inc_addr_max, fmt, my_bind_addr_str, mysqld_port);
+      }
     }
-    else // mysqld binds to 0.0.0.0, take IP from wsrep_node_address if possible
+    else /* mysqld binds to 0.0.0.0, try taking IP from wsrep_node_address. */
     {
       size_t const node_addr_len= strlen(node_addr);
       if (node_addr_len > 0)
       {
-        const char* const colon= strrchr(node_addr, ':');
-        if (strchr(node_addr, ':') == colon) // 1 or 0 ':'
-        {
-          size_t const iplen= colon ? colon - node_addr : node_addr_len;
-          if (iplen + 7 /* :55555\0 */ < inc_addr_max)
-          {
-            memcpy (inc_addr, node_addr, iplen);
-            snprintf(inc_addr + iplen, inc_addr_max - iplen, ":%u",
-                     (int)mysqld_port);
-          }
-          else
-          {
-            WSREP_WARN("Guessing address for incoming client connections: "
-                       "address too long.");
-            inc_addr[0]= '\0';
-          }
-        }
-        else
-        {
-          WSREP_WARN("Guessing address for incoming client connections: "
-                     "too many colons :) .");
-          inc_addr[0]= '\0';
-        }
-      }
+        wsp::Address addr(node_addr);
 
-      if (!strlen(inc_addr))
-      {
+        if (!addr.is_valid())
+        {
+          WSREP_DEBUG("Could not parse node address : %s", node_addr);
           WSREP_WARN("Guessing address for incoming client connections failed. "
                      "Try setting wsrep_node_incoming_address explicitly.");
+          goto done;
+        }
+
+        const char *fmt= (addr.is_ipv6()) ? "[%s]:%u" : "%s:%u";
+        snprintf(inc_addr, inc_addr_max, fmt, addr.get_address(),
+                 (int) mysqld_port);
       }
-    }
-  }
-  else if (!strchr(wsrep_node_incoming_address, ':')) // no port included
-  {
-    if ((int)inc_addr_max <=
-        snprintf(inc_addr, inc_addr_max, "%s:%u",
-                 wsrep_node_incoming_address,(int)mysqld_port))
-    {
-      WSREP_WARN("Guessing address for incoming client connections: "
-                 "address too long.");
-      inc_addr[0]= '\0';
     }
   }
   else
   {
-    size_t const need = strlen (wsrep_node_incoming_address);
-    if (need >= inc_addr_max) {
-      WSREP_WARN("wsrep_node_incoming_address too long: %zu", need);
-      inc_addr[0]= '\0';
+    wsp::Address addr(wsrep_node_incoming_address);
+
+    if (!addr.is_valid())
+    {
+      WSREP_WARN("Could not parse wsrep_node_incoming_address : %s",
+                 wsrep_node_incoming_address);
+      goto done;
     }
-    else {
-      memcpy (inc_addr, wsrep_node_incoming_address, need);
-    }
+
+    /*
+      In case port is not specified in wsrep_node_incoming_address, we use
+      mysqld_port.
+    */
+    int port= (addr.get_port() > 0) ? addr.get_port() : (int) mysqld_port;
+    const char *fmt= (addr.is_ipv6()) ? "[%s]:%u" : "%s:%u";
+
+    snprintf(inc_addr, inc_addr_max, fmt, addr.get_address(), port);
   }
 
+done:
   struct wsrep_init_args wsrep_args;
 
   struct wsrep_gtid const state_id = { local_uuid, local_seqno };
@@ -1215,14 +1211,15 @@ int wsrep_to_buf_helper(
     THD* thd, const char *query, uint query_len, uchar** buf, size_t* buf_len)
 {
   IO_CACHE tmp_io_cache;
+  Log_event_writer writer(&tmp_io_cache);
   if (open_cached_file(&tmp_io_cache, mysql_tmpdir, TEMP_PREFIX,
                        65536, MYF(MY_WME)))
     return 1;
   int ret(0);
 
   Format_description_log_event *tmp_fd= new Format_description_log_event(4);
-  tmp_fd->checksum_alg= binlog_checksum_options;
-  tmp_fd->write(&tmp_io_cache);
+  tmp_fd->checksum_alg= (enum_binlog_checksum_alg)binlog_checksum_options;
+  writer.write(tmp_fd);
   delete tmp_fd;
 
 #ifdef GTID_SUPPORT
@@ -1230,7 +1227,7 @@ int wsrep_to_buf_helper(
   {
       Gtid_log_event gtid_ev(thd, FALSE, &thd->variables.gtid_next);
       if (!gtid_ev.is_valid()) ret= 0;
-      if (!ret && gtid_ev.write(&tmp_io_cache)) ret= 1;
+      if (!ret && writer.write(&gtid_ev)) ret= 1;
   }
 #endif /* GTID_SUPPORT */
 
@@ -1240,12 +1237,12 @@ int wsrep_to_buf_helper(
     Query_log_event ev(thd, thd->wsrep_TOI_pre_query,
 		       thd->wsrep_TOI_pre_query_len,
 		       FALSE, FALSE, FALSE, 0);
-    if (ev.write(&tmp_io_cache)) ret= 1;
+    if (writer.write(&ev)) ret= 1;
   }
 
   /* continue to append the actual query */
   Query_log_event ev(thd, query, query_len, FALSE, FALSE, FALSE, 0);
-  if (!ret && ev.write(&tmp_io_cache)) ret= 1;
+  if (!ret && writer.write(&ev)) ret= 1;
   if (!ret && wsrep_write_cache_buf(&tmp_io_cache, buf, buf_len)) ret= 1;
   close_cached_file(&tmp_io_cache);
   return ret;
@@ -1298,7 +1295,13 @@ create_view_query(THD *thd, uchar** buf, size_t* buf_len)
     buff.append(command[thd->lex->create_view_mode].str,
                 command[thd->lex->create_view_mode].length);
 
-    if (!lex->definer)
+    LEX_USER *definer;
+
+    if (lex->definer)
+    {
+      definer= get_current_user(thd, lex->definer);
+    }
+    else
     {
       /*
         DEFINER-clause is missing; we have to create default definer in
@@ -1306,16 +1309,19 @@ create_view_query(THD *thd, uchar** buf, size_t* buf_len)
         If this is an ALTER VIEW then the current user should be set as
         the definer.
       */
+      definer= create_default_definer(thd, false);
+    }
 
-      if (!(lex->definer= create_default_definer(thd, false)))
-      {
-        WSREP_WARN("view default definer issue");
-      }
+    if (definer)
+    {
+      views->definer.user = definer->user;
+      views->definer.host = definer->host;
+    } else {
+      WSREP_ERROR("Failed to get DEFINER for VIEW.");
+      return 1;
     }
 
     views->algorithm    = lex->create_view_algorithm;
-    views->definer.user = lex->definer->user;
-    views->definer.host = lex->definer->host;
     views->view_suid    = lex->create_view_suid;
     views->with_check   = lex->create_view_check;
 
@@ -1367,6 +1373,7 @@ static int wsrep_TOI_begin(THD *thd, char *db_, char *table_,
   uchar* buf(0);
   size_t buf_len(0);
   int buf_err;
+  int rc= 0;
 
   WSREP_DEBUG("TO BEGIN: %lld, %d : %s", (long long)wsrep_thd_trx_seqno(thd),
               thd->wsrep_exec_mode, thd->query() );
@@ -1406,7 +1413,6 @@ static int wsrep_TOI_begin(THD *thd, char *db_, char *table_,
   {
     thd->wsrep_exec_mode= TOTAL_ORDER;
     wsrep_to_isolation++;
-    if (buf) my_free(buf);
     wsrep_keys_free(&key_arr);
     WSREP_DEBUG("TO BEGIN: %lld, %d",(long long)wsrep_thd_trx_seqno(thd),
 		thd->wsrep_exec_mode);
@@ -1418,18 +1424,18 @@ static int wsrep_TOI_begin(THD *thd, char *db_, char *table_,
                ret, (thd->query()) ? thd->query() : "void");
     my_error(ER_LOCK_DEADLOCK, MYF(0), "WSREP replication failed. Check "
 	     "your wsrep connection state and retry the query.");
-    if (buf) my_free(buf);
     wsrep_keys_free(&key_arr);
-    return -1;
+    rc= -1;
   }
   else {
     /* non replicated DDL, affecting temporary tables only */
     WSREP_DEBUG("TO isolation skipped for: %d, sql: %s."
 		"Only temporary tables affected.",
 		ret, (thd->query()) ? thd->query() : "void");
-    return 1;
+    rc= 1;
   }
-  return 0;
+  if (buf) my_free(buf);
+  return rc;
 }
 
 static void wsrep_TOI_end(THD *thd) {
@@ -1737,7 +1743,7 @@ pthread_handler_t start_wsrep_THD(void *arg)
   thread_created++;
   threads.append(thd);
 
-  my_net_init(&thd->net,(st_vio*) 0, MYF(0));
+  my_net_init(&thd->net,(st_vio*) 0, thd, MYF(0));
 
   DBUG_PRINT("wsrep",(("creating thread %lld"), (long long)thd->thread_id));
   thd->prior_thr_create_utime= thd->start_utime= microsecond_interval_timer();

@@ -41,12 +41,84 @@ class Column_statistics;
 class Column_statistics_collected;
 class Item_func;
 class Item_bool_func;
+class Item_equal;
 
 enum enum_check_fields
 {
   CHECK_FIELD_IGNORE,
   CHECK_FIELD_WARN,
   CHECK_FIELD_ERROR_FOR_NULL
+};
+
+
+/*
+  Common declarations for Field and Item
+*/
+class Value_source
+{
+public:
+  /*
+    The enumeration Subst_constraint is currently used only in implementations
+    of the virtual function subst_argument_checker.
+  */
+  enum Subst_constraint
+  {
+    ANY_SUBST,           /* Any substitution for a field is allowed  */
+    IDENTITY_SUBST       /* Substitution for a field is allowed if any two
+                            different values of the field type are not equal */
+  };
+  /*
+    Item context attributes.
+    Comparison functions pass their attributes to propagate_equal_fields().
+    For exmple, for string comparison, the collation of the comparison
+    operation is important inside propagate_equal_fields().
+  */
+  class Context
+  {
+    /*
+      Which type of propagation is allowed:
+      - ANY_SUBST (loose equality, according to the collation), or
+      - IDENTITY_SUBST (strict binary equality).
+    */
+    Subst_constraint m_subst_constraint;
+    /*
+      Comparison type.
+      Impostant only when ANY_SUBSTS.
+    */
+    Item_result m_compare_type;
+    /*
+      Collation of the comparison operation.
+      Important only when ANY_SUBST.
+    */
+    CHARSET_INFO *m_compare_collation;
+  public:
+    Context(Subst_constraint subst, Item_result type, CHARSET_INFO *cs)
+      :m_subst_constraint(subst),
+       m_compare_type(type),
+       m_compare_collation(cs) { }
+    Subst_constraint subst_constraint() const { return m_subst_constraint; }
+    Item_result compare_type() const
+    {
+      DBUG_ASSERT(m_subst_constraint == ANY_SUBST);
+      return m_compare_type;
+    }
+    CHARSET_INFO *compare_collation() const
+    {
+      DBUG_ASSERT(m_subst_constraint == ANY_SUBST);
+      return m_compare_collation;
+    }
+  };
+  class Context_identity: public Context
+  { // Use this to request only exact value, no invariants.
+  public:
+     Context_identity()
+      :Context(IDENTITY_SUBST, STRING_RESULT, &my_charset_bin) { }
+  };
+  class Context_boolean: public Context
+  { // Use this when an item is [a part of] a boolean expression
+  public:
+    Context_boolean() :Context(ANY_SUBST, INT_RESULT, &my_charset_bin) { }
+  };
 };
 
 
@@ -60,6 +132,7 @@ enum Derivation
   DERIVATION_NONE= 1,
   DERIVATION_EXPLICIT= 0
 };
+
 
 #define STORAGE_TYPE_MASK 7
 #define COLUMN_FORMAT_MASK 7
@@ -287,7 +360,7 @@ public:
   }
 };
 
-class Field
+class Field: public Value_source
 {
   Field(const Item &);				/* Prevent use of these */
   void operator=(Field &);
@@ -1012,16 +1085,38 @@ public:
     return (double) 0.5; 
   }
 
-  virtual bool can_optimize_keypart_ref(const Item_func *cond,
+  /*
+    Check if comparison between the field and an item unambiguously
+    identifies a distinct field value.
+
+    Example1: SELECT * FROM t1 WHERE int_column=10;
+              This example returns distinct integer value of 10.
+
+    Example2: SELECT * FROM t1 WHERE varchar_column=DATE'2001-01-01'
+              This example returns non-distinct values.
+              Comparison as DATE will return '2001-01-01' and '2001-01-01x',
+              but these two values are not equal to each other as VARCHARs.
+    See also the function with the same name in sql_select.cc.
+  */
+  virtual bool test_if_equality_guarantees_uniqueness(const Item *const_item)
+                                                      const;
+  virtual bool can_be_substituted_to_equal_item(const Context &ctx,
+                                        const Item_equal *item);
+  virtual Item *get_equal_const_item(THD *thd, const Context &ctx,
+                                     Item *const_item)
+  {
+    return const_item;
+  }
+  virtual bool can_optimize_keypart_ref(const Item_bool_func *cond,
                                         const Item *item) const;
-  virtual bool can_optimize_hash_join(const Item_func *cond,
+  virtual bool can_optimize_hash_join(const Item_bool_func *cond,
                                       const Item *item) const
   {
     return can_optimize_keypart_ref(cond, item);
   }
   virtual bool can_optimize_group_min_max(const Item_bool_func *cond,
                                           const Item *const_item) const;
-  bool can_optimize_outer_join_table_elimination(const Item_func *cond,
+  bool can_optimize_outer_join_table_elimination(const Item_bool_func *cond,
                                                  const Item *item) const
   {
     // Exactly the same rules with REF access
@@ -1111,6 +1206,10 @@ protected:
 
 
 class Field_num :public Field {
+protected:
+  void prepend_zeros(String *value) const;
+  Item *get_equal_zerofill_const_item(THD *thd, const Context &ctx,
+                                      Item *const_item);
 public:
   const uint8 dec;
   bool zerofill,unsigned_flag;	// Purify cannot handle bit fields
@@ -1122,7 +1221,12 @@ public:
   enum Derivation derivation(void) const { return DERIVATION_NUMERIC; }
   uint repertoire(void) const { return MY_REPERTOIRE_NUMERIC; }
   CHARSET_INFO *charset(void) const { return &my_charset_numeric; }
-  void prepend_zeros(String *value);
+  Item *get_equal_const_item(THD *thd, const Context &ctx, Item *const_item)
+  {
+    return (flags & ZEROFILL_FLAG) ?
+           get_equal_zerofill_const_item(thd, ctx, const_item) :
+           const_item;
+  }
   void add_zerofill_and_unsigned(String &res) const;
   friend class Create_field;
   void make_field(Send_field *);
@@ -1157,6 +1261,8 @@ protected:
   CHARSET_INFO *field_charset;
   enum Derivation field_derivation;
 public:
+  bool can_be_substituted_to_equal_item(const Context &ctx,
+                                        const Item_equal *item_equal);
   Field_str(uchar *ptr_arg,uint32 len_arg, uchar *null_ptr_arg,
 	    uchar null_bit_arg, utype unireg_check_arg,
 	    const char *field_name_arg, CHARSET_INFO *charset);
@@ -1187,6 +1293,7 @@ public:
   {
     return pos_in_interval_val_str(min, max, length_size());
   }
+  bool test_if_equality_guarantees_uniqueness(const Item *const_item) const;
 };
 
 /* base class for Field_string, Field_varstring and Field_blob */
@@ -1207,10 +1314,13 @@ protected:
     return report_if_important_data(copier->source_end_pos(),
                                     end, count_spaces);
   }
-  bool cmp_to_string_with_same_collation(const Item_func *cond,
+  bool cmp_to_string_with_same_collation(const Item_bool_func *cond,
                                          const Item *item) const;
-  bool cmp_to_string_with_stricter_collation(const Item_func *cond,
+  bool cmp_to_string_with_stricter_collation(const Item_bool_func *cond,
                                              const Item *item) const;
+  my_decimal *val_decimal_from_str(const char *str, uint length,
+                                   CHARSET_INFO *cs,
+                                   my_decimal *decimal_value);
 public:
   Field_longstr(uchar *ptr_arg, uint32 len_arg, uchar *null_ptr_arg,
                 uchar null_bit_arg, utype unireg_check_arg,
@@ -1222,8 +1332,10 @@ public:
   int store_decimal(const my_decimal *d);
   uint32 max_data_length() const;
   bool match_collation_to_optimize_range() const { return true; }
-  bool can_optimize_keypart_ref(const Item_func *cond, const Item *item) const;
-  bool can_optimize_hash_join(const Item_func *cond, const Item *item) const;
+  bool can_optimize_keypart_ref(const Item_bool_func *cond,
+                                const Item *item) const;
+  bool can_optimize_hash_join(const Item_bool_func *cond,
+                              const Item *item) const;
   bool can_optimize_group_min_max(const Item_bool_func *cond,
                                   const Item *const_item) const;
 };
@@ -1248,6 +1360,7 @@ public:
   my_decimal *val_decimal(my_decimal *);
   uint32 max_display_length() { return field_length; }
   uint size_of() const { return sizeof(*this); }
+  Item *get_equal_const_item(THD *thd, const Context &ctx, Item *const_item);
 };
 
 
@@ -1332,7 +1445,8 @@ public:
                              uint16 mflags, int *order_var);
   uint is_equal(Create_field *new_field);
   virtual const uchar *unpack(uchar* to, const uchar *from, const uchar *from_end, uint param_data);
-  static Field *create_from_item (Item *);
+  static Field *create_from_item(MEM_ROOT *root, Item *);
+  Item *get_equal_const_item(THD *thd, const Context &ctx, Item *const_item);
 };
 
 
@@ -1653,7 +1767,8 @@ public:
   uint size_of() const { return sizeof(*this); }
   uint32 max_display_length() { return 4; }
   void move_field_offset(my_ptrdiff_t ptr_diff) {}
-  bool can_optimize_keypart_ref(const Item_func *cond, const Item *item) const
+  bool can_optimize_keypart_ref(const Item_bool_func *cond,
+                                const Item *item) const
   {
     DBUG_ASSERT(0);
     return false;
@@ -1668,6 +1783,9 @@ public:
 
 
 class Field_temporal: public Field {
+protected:
+  Item *get_equal_const_item_datetime(THD *thd, const Context &ctx,
+                                      Item *const_item);
 public:
   Field_temporal(uchar *ptr_arg,uint32 len_arg, uchar *null_ptr_arg,
                  uchar null_bit_arg, utype unireg_check_arg,
@@ -1696,7 +1814,8 @@ public:
   {
     return pos_in_interval_val_real(min, max);
   }
-  bool can_optimize_keypart_ref(const Item_func *cond, const Item *item) const;
+  bool can_optimize_keypart_ref(const Item_bool_func *cond,
+                                const Item *item) const;
   bool can_optimize_group_min_max(const Item_bool_func *cond,
                                   const Item *const_item) const;
 };
@@ -1812,6 +1931,10 @@ public:
     return unpack_int32(to, from, from_end);
   }
   bool validate_value_in_record(THD *thd, const uchar *record) const;
+  Item *get_equal_const_item(THD *thd, const Context &ctx, Item *const_item)
+  {
+    return get_equal_const_item_datetime(thd, ctx, const_item);
+  }
   uint size_of() const { return sizeof(*this); }
 };
 
@@ -2000,6 +2123,7 @@ public:
   bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate)
   { return Field_newdate::get_TIME(ltime, ptr, fuzzydate); }
   uint size_of() const { return sizeof(*this); }
+  Item *get_equal_const_item(THD *thd, const Context &ctx, Item *const_item);
 };
 
 
@@ -2043,6 +2167,7 @@ public:
   Field *new_key_field(MEM_ROOT *root, TABLE *new_table,
                        uchar *new_ptr, uint32 length,
                        uchar *new_null_ptr, uint new_null_bit);
+  Item *get_equal_const_item(THD *thd, const Context &ctx, Item *const_item);
 };
 
 
@@ -2201,6 +2326,10 @@ public:
   {
     return unpack_int64(to, from, from_end);
   }
+  Item *get_equal_const_item(THD *thd, const Context &ctx, Item *const_item)
+  {
+    return get_equal_const_item_datetime(thd, ctx, const_item);
+  }
   uint size_of() const { return sizeof(*this); }
 };
 
@@ -2309,45 +2438,50 @@ public:
 
 
 static inline Field_timestamp *
-new_Field_timestamp(uchar *ptr, uchar *null_ptr, uchar null_bit,
+new_Field_timestamp(MEM_ROOT *root,uchar *ptr, uchar *null_ptr, uchar null_bit,
                     enum Field::utype unireg_check, const char *field_name,
                     TABLE_SHARE *share, uint dec)
 {
   if (dec==0)
-    return new Field_timestamp(ptr, MAX_DATETIME_WIDTH, null_ptr, null_bit,
-                                unireg_check, field_name, share);
+    return new (root)
+      Field_timestamp(ptr, MAX_DATETIME_WIDTH, null_ptr,
+                      null_bit, unireg_check, field_name, share);
   if (dec == NOT_FIXED_DEC)
     dec= MAX_DATETIME_PRECISION;
-  return new Field_timestamp_hires(ptr, null_ptr, null_bit, unireg_check,
-                                   field_name, share, dec);
+  return new (root)
+    Field_timestamp_hires(ptr, null_ptr, null_bit, unireg_check,
+                          field_name, share, dec);
 }
 
 static inline Field_time *
-new_Field_time(uchar *ptr, uchar *null_ptr, uchar null_bit,
+new_Field_time(MEM_ROOT *root, uchar *ptr, uchar *null_ptr, uchar null_bit,
                enum Field::utype unireg_check, const char *field_name,
                uint dec)
 {
   if (dec == 0)
-    return new Field_time(ptr, MIN_TIME_WIDTH, null_ptr, null_bit,
-                          unireg_check, field_name);
+    return new (root)
+      Field_time(ptr, MIN_TIME_WIDTH, null_ptr, null_bit, unireg_check,
+                 field_name);
   if (dec == NOT_FIXED_DEC)
     dec= MAX_DATETIME_PRECISION;
-  return new Field_time_hires(ptr, null_ptr, null_bit,
-                                  unireg_check, field_name, dec);
+  return new (root)
+    Field_time_hires(ptr, null_ptr, null_bit, unireg_check, field_name, dec);
 }
 
 static inline Field_datetime *
-new_Field_datetime(uchar *ptr, uchar *null_ptr, uchar null_bit,
+new_Field_datetime(MEM_ROOT *root, uchar *ptr, uchar *null_ptr, uchar null_bit,
                    enum Field::utype unireg_check,
                    const char *field_name, uint dec)
 {
   if (dec == 0)
-    return new Field_datetime(ptr, MAX_DATETIME_WIDTH, null_ptr, null_bit,
-                              unireg_check, field_name);
+    return new (root)
+      Field_datetime(ptr, MAX_DATETIME_WIDTH, null_ptr, null_bit,
+                     unireg_check, field_name);
   if (dec == NOT_FIXED_DEC)
     dec= MAX_DATETIME_PRECISION;
-  return new Field_datetime_hires(ptr, null_ptr, null_bit,
-                                  unireg_check, field_name, dec);
+  return new (root)
+    Field_datetime_hires(ptr, null_ptr, null_bit,
+                         unireg_check, field_name, dec);
 }
 
 class Field_string :public Field_longstr {
@@ -2773,7 +2907,8 @@ public:
   virtual const uchar *unpack(uchar *to, const uchar *from,
                               const uchar *from_end, uint param_data);
 
-  bool can_optimize_keypart_ref(const Item_func *cond, const Item *item) const;
+  bool can_optimize_keypart_ref(const Item_bool_func *cond,
+                                const Item *item) const;
   bool can_optimize_group_min_max(const Item_bool_func *cond,
                                   const Item *const_item) const
   {
@@ -3050,7 +3185,7 @@ public:
     interval_list.empty();
   }
 
-  Create_field(Field *field, Field *orig_field);
+  Create_field(THD *thd, Field *field, Field *orig_field);
   /* Used to make a clone of this object for ALTER/CREATE TABLE */
   Create_field *clone(MEM_ROOT *mem_root) const;
   void create_length_to_internal_length(void);
@@ -3157,7 +3292,8 @@ public:
 };
 
 
-Field *make_field(TABLE_SHARE *share, uchar *ptr, uint32 field_length,
+Field *make_field(TABLE_SHARE *share, MEM_ROOT *mem_root,
+                  uchar *ptr, uint32 field_length,
 		  uchar *null_pos, uchar null_bit,
 		  uint pack_flag, enum_field_types field_type,
 		  CHARSET_INFO *cs,

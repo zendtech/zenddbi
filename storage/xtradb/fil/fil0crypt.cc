@@ -244,9 +244,6 @@ fil_space_merge_crypt_data(
 	ut_a(dst->type == CRYPT_SCHEME_UNENCRYPTED ||
 	     dst->type == CRYPT_SCHEME_1);
 
-	/* no support for changing iv (yet?) */
-	ut_a(memcmp(src->iv, dst->iv, sizeof(src->iv)) == 0);
-
 	dst->encryption = src->encryption;
 	dst->type = src->type;
 	dst->min_key_version = src->min_key_version;
@@ -555,42 +552,22 @@ fil_space_clear_crypt_data(
 }
 
 /******************************************************************
-Encrypt a page */
+Encrypt a buffer */
 UNIV_INTERN
 byte*
-fil_space_encrypt(
-/*==============*/
+fil_encrypt_buf(
+/*============*/
+	fil_space_crypt_t* crypt_data,	/*!< in: crypt data */
 	ulint		space,		/*!< in: Space id */
 	ulint		offset,		/*!< in: Page offset */
 	lsn_t		lsn,		/*!< in: lsn */
 	byte*		src_frame,	/*!< in: Source page to be encrypted */
 	ulint		zip_size,	/*!< in: compressed size if
-					row_format compressed */
+					row format compressed */
 	byte*		dst_frame)	/*!< in: outbut buffer */
 {
-	fil_space_crypt_t* crypt_data = NULL;
 	ulint page_size = (zip_size) ? zip_size : UNIV_PAGE_SIZE;
-	uint key_version;
-
-	ulint orig_page_type = mach_read_from_2(src_frame+FIL_PAGE_TYPE);
-
-	if (orig_page_type==FIL_PAGE_TYPE_FSP_HDR
-		|| orig_page_type==FIL_PAGE_TYPE_XDES) {
-		/* File space header or extent descriptor do not need to be
-		encrypted. */
-		return src_frame;
-	}
-
-	/* Get crypt data from file space */
-	crypt_data = fil_space_get_crypt_data(space);
-
-	if (crypt_data == NULL) {
-		return src_frame;
-	}
-
-	ut_ad(crypt_data->encryption != FIL_SPACE_ENCRYPTION_OFF);
-
-	key_version = fil_crypt_get_latest_key_version(crypt_data);
+	uint key_version = fil_crypt_get_latest_key_version(crypt_data);
 
 	if (key_version == ENCRYPTION_KEY_VERSION_INVALID) {
 		ib_logf(IB_LOG_LEVEL_FATAL,
@@ -599,6 +576,7 @@ fil_space_encrypt(
 		ut_error;
 	}
 
+	ulint orig_page_type = mach_read_from_2(src_frame+FIL_PAGE_TYPE);
 	ibool page_compressed = (orig_page_type == FIL_PAGE_PAGE_COMPRESSED_ENCRYPTED);
 	ulint header_len = FIL_PAGE_DATA;
 
@@ -650,31 +628,8 @@ fil_space_encrypt(
 
 	/* handle post encryption checksum */
 	ib_uint32_t checksum = 0;
-	srv_checksum_algorithm_t algorithm =
-			static_cast<srv_checksum_algorithm_t>(srv_checksum_algorithm);
 
-	if (zip_size == 0) {
-		switch (algorithm) {
-		case SRV_CHECKSUM_ALGORITHM_CRC32:
-		case SRV_CHECKSUM_ALGORITHM_STRICT_CRC32:
-			checksum = buf_calc_page_crc32(dst_frame);
-			break;
-		case SRV_CHECKSUM_ALGORITHM_INNODB:
-		case SRV_CHECKSUM_ALGORITHM_STRICT_INNODB:
-			checksum = (ib_uint32_t) buf_calc_page_new_checksum(
-				dst_frame);
-			break;
-		case SRV_CHECKSUM_ALGORITHM_NONE:
-		case SRV_CHECKSUM_ALGORITHM_STRICT_NONE:
-			checksum = BUF_NO_CHECKSUM_MAGIC;
-			break;
-			/* no default so the compiler will emit a warning
-			* if new enum is added and not handled here */
-		}
-	} else {
-		checksum = page_zip_calc_checksum(dst_frame, zip_size,
-				                          algorithm);
-	}
+	checksum = fil_crypt_calculate_checksum(zip_size, dst_frame);
 
 	// store the post-encryption checksum after the key-version
 	mach_write_to_4(dst_frame + FIL_PAGE_FILE_FLUSH_LSN_OR_KEY_VERSION + 4, checksum);
@@ -682,6 +637,45 @@ fil_space_encrypt(
 	srv_stats.pages_encrypted.inc();
 
 	return dst_frame;
+}
+
+/******************************************************************
+Encrypt a page */
+UNIV_INTERN
+byte*
+fil_space_encrypt(
+/*==============*/
+	ulint		space,		/*!< in: Space id */
+	ulint		offset,		/*!< in: Page offset */
+	lsn_t		lsn,		/*!< in: lsn */
+	byte*		src_frame,	/*!< in: Source page to be encrypted */
+	ulint		zip_size,	/*!< in: compressed size if
+					row_format compressed */
+	byte*		dst_frame)	/*!< in: outbut buffer */
+{
+	fil_space_crypt_t* crypt_data = NULL;
+
+	ulint orig_page_type = mach_read_from_2(src_frame+FIL_PAGE_TYPE);
+
+	if (orig_page_type==FIL_PAGE_TYPE_FSP_HDR
+		|| orig_page_type==FIL_PAGE_TYPE_XDES) {
+		/* File space header or extent descriptor do not need to be
+		encrypted. */
+		return src_frame;
+	}
+
+	/* Get crypt data from file space */
+	crypt_data = fil_space_get_crypt_data(space);
+
+	if (crypt_data == NULL) {
+		return src_frame;
+	}
+
+	ut_ad(crypt_data->encryption != FIL_SPACE_ENCRYPTION_OFF);
+
+	byte* tmp = fil_encrypt_buf(crypt_data, space, offset, lsn, src_frame, zip_size, dst_frame);
+
+	return tmp;
 }
 
 /*********************************************************************
@@ -720,11 +714,15 @@ fil_space_decrypt(
 	fil_space_crypt_t*	crypt_data,	/*!< in: crypt data */
 	byte*			tmp_frame,	/*!< in: temporary buffer */
 	ulint			page_size,	/*!< in: page size */
-	byte*			src_frame)	/*!< in:out: page buffer */
+	byte*			src_frame,	/*!< in: out: page buffer */
+	dberr_t*		err)		/*!< in: out: DB_SUCCESS or
+						error code */
 {
 	ulint page_type = mach_read_from_2(src_frame+FIL_PAGE_TYPE);
 	uint key_version = mach_read_from_4(src_frame + FIL_PAGE_FILE_FLUSH_LSN_OR_KEY_VERSION);
 	bool page_compressed = (page_type == FIL_PAGE_PAGE_COMPRESSED_ENCRYPTED);
+
+	*err = DB_SUCCESS;
 
 	if (key_version == ENCRYPTION_KEY_NOT_ENCRYPTED) {
 		return false;
@@ -762,6 +760,12 @@ fil_space_decrypt(
 					   space, offset, lsn);
 
 	if (! ((rc == MY_AES_OK) && ((ulint) dstlen == srclen))) {
+
+		if (rc == -1) {
+			*err = DB_DECRYPTION_FAILED;
+			return false;
+		}
+
 		ib_logf(IB_LOG_LEVEL_FATAL,
 			"Unable to decrypt data-block "
 			" src: %p srclen: %ld buf: %p buflen: %d."
@@ -803,11 +807,14 @@ fil_space_decrypt(
 	ulint		page_size,	/*!< in: page size */
 	byte*		src_frame)	/*!< in/out: page buffer */
 {
+	dberr_t err = DB_SUCCESS;
+
 	bool encrypted = fil_space_decrypt(
 				fil_space_get_crypt_data(space),
 				tmp_frame,
 				page_size,
-				src_frame);
+				src_frame,
+				&err);
 
 	if (encrypted) {
 		/* Copy the decrypted page back to page buffer, not
@@ -816,6 +823,47 @@ fil_space_decrypt(
 	}
 
 	return src_frame;
+}
+
+/******************************************************************
+Calculate post encryption checksum
+@return page checksum or BUF_NO_CHECKSUM_MAGIC
+not needed. */
+UNIV_INTERN
+ulint
+fil_crypt_calculate_checksum(
+/*=========================*/
+	ulint	zip_size,	/*!< in: zip_size or 0 */
+	byte*	dst_frame)	/*!< in: page where to calculate */
+{
+	ib_uint32_t checksum = 0;
+	srv_checksum_algorithm_t algorithm =
+			static_cast<srv_checksum_algorithm_t>(srv_checksum_algorithm);
+
+	if (zip_size == 0) {
+		switch (algorithm) {
+		case SRV_CHECKSUM_ALGORITHM_CRC32:
+		case SRV_CHECKSUM_ALGORITHM_STRICT_CRC32:
+			checksum = buf_calc_page_crc32(dst_frame);
+			break;
+		case SRV_CHECKSUM_ALGORITHM_INNODB:
+		case SRV_CHECKSUM_ALGORITHM_STRICT_INNODB:
+			checksum = (ib_uint32_t) buf_calc_page_new_checksum(
+				dst_frame);
+			break;
+		case SRV_CHECKSUM_ALGORITHM_NONE:
+		case SRV_CHECKSUM_ALGORITHM_STRICT_NONE:
+			checksum = BUF_NO_CHECKSUM_MAGIC;
+			break;
+			/* no default so the compiler will emit a warning
+			* if new enum is added and not handled here */
+		}
+	} else {
+		checksum = page_zip_calc_checksum(dst_frame, zip_size,
+				                          algorithm);
+	}
+
+	return checksum;
 }
 
 /*********************************************************************
@@ -2312,6 +2360,7 @@ fil_crypt_threads_init()
 	uint cnt = srv_n_fil_crypt_threads;
 	srv_n_fil_crypt_threads = 0;
 	fil_crypt_set_thread_cnt(cnt);
+	fil_crypt_threads_inited = true;
 }
 
 /*********************************************************************

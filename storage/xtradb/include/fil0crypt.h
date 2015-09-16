@@ -211,7 +211,10 @@ fil_space_decrypt(
 	fil_space_crypt_t*	crypt_data,	/*!< in: crypt data */
 	byte*			tmp_frame,	/*!< in: temporary buffer */
 	ulint			page_size,	/*!< in: page size */
-	byte*			src_frame);	/*!< in:out: page buffer */
+	byte*			src_frame,	/*!< in:out: page buffer */
+	dberr_t*		err);		/*!< in: out: DB_SUCCESS or
+						error code */
+
 
 /*********************************************************************
 Encrypt buffer page
@@ -380,6 +383,33 @@ void
 fil_crypt_set_encrypt_tables(
 /*=========================*/
 	uint val);      /*!< in: New srv_encrypt_tables setting */
+
+/******************************************************************
+Encrypt a buffer */
+UNIV_INTERN
+byte*
+fil_encrypt_buf(
+/*============*/
+	fil_space_crypt_t* crypt_data,	/*!< in: crypt data */
+	ulint		space,		/*!< in: Space id */
+	ulint		offset,		/*!< in: Page offset */
+	lsn_t		lsn,		/*!< in: lsn */
+	byte*		src_frame,	/*!< in: Source page to be encrypted */
+	ulint		zip_size,	/*!< in: compressed size if
+					row_format compressed */
+	byte*		dst_frame);	/*!< in: outbut buffer */
+
+/******************************************************************
+Calculate post encryption checksum
+@return page checksum or BUF_NO_CHECKSUM_MAGIC
+not needed. */
+UNIV_INTERN
+ulint
+fil_crypt_calculate_checksum(
+/*=========================*/
+	ulint	zip_size,	/*!< in: zip_size or 0 */
+	byte*	dst_frame);	/*!< in: page where to calculate */
+
 
 #ifndef UNIV_NONINL
 #include "fil0crypt.ic"

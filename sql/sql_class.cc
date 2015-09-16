@@ -961,6 +961,7 @@ THD::THD(bool is_wsrep_applier)
   file_id = 0;
   query_id= 0;
   query_name_consts= 0;
+  semisync_info= 0;
   db_charset= global_system_variables.collation_database;
   bzero(ha_data, sizeof(ha_data));
   mysys_var=0;
@@ -1286,7 +1287,7 @@ Sql_condition* THD::raise_condition(uint sql_errno,
     }
   }
 
-  query_cache_abort(&query_cache_tls);
+  query_cache_abort(this, &query_cache_tls);
 
   /* 
      Avoid pushing a condition for fatal out of memory errors as this will 
@@ -1418,6 +1419,7 @@ void THD::init(void)
   bzero((char *) &org_status_var, sizeof(org_status_var));
   start_bytes_received= 0;
   last_commit_gtid.seq_no= 0;
+  status_in_global= 0;
 #ifdef WITH_WSREP
   wsrep_exec_mode= wsrep_applier ? REPL_RECV :  LOCAL_STATE;
   wsrep_conflict_state= NO_CONFLICT;
@@ -1540,6 +1542,7 @@ void THD::change_user(void)
   cleanup();
   reset_killed();
   cleanup_done= 0;
+  status_in_global= 0;
   init();
   stmt_map.reset();
   my_hash_init(&user_vars, system_charset_info, USER_VARS_HASH_SIZE, 0, 0,
@@ -1676,6 +1679,7 @@ THD::~THD()
   mysql_audit_free_thd(this);
   if (rgi_slave)
     rgi_slave->cleanup_after_session();
+  my_free(semisync_info);
 #endif
   main_lex.free_set_stmt_mem_root();
   free_root(&main_mem_root, MYF(0));
@@ -1939,6 +1943,7 @@ void THD::disconnect()
   /* Disconnect even if a active vio is not associated. */
   if (net.vio != vio)
     vio_close(net.vio);
+  net.thd= 0;                                   // Don't collect statistics
 
   mysql_mutex_unlock(&LOCK_thd_data);
 }
@@ -2065,7 +2070,11 @@ bool THD::store_globals()
   real_id= pthread_self();                      // For debugging
   mysys_var->stack_ends_here= thread_stack +    // for consistency, see libevent_thread_proc
                               STACK_DIRECTION * (long)my_thread_stack_size;
-  vio_set_thread_id(net.vio, real_id);
+  if (net.vio)
+  {
+    vio_set_thread_id(net.vio, real_id);
+    net.thd= this;
+  }
   /*
     We have to call thr_lock_info_init() again here as THD may have been
     created in another thread
@@ -2090,7 +2099,7 @@ void THD::reset_globals()
   /* Undocking the thread specific data. */
   set_current_thd(0);
   my_pthread_setspecific_ptr(THR_MALLOC, NULL);
-  
+  net.thd= 0;
 }
 
 /*
@@ -2456,11 +2465,11 @@ int THD::send_explain_fields(select_result *result, uint8 explain_flags, bool is
 
 void THD::make_explain_json_field_list(List<Item> &field_list, bool is_analyze)
 {
-  Item *item= new Item_empty_string((is_analyze ?
-                                     "ANALYZE" :
-                                     "EXPLAIN"),
-                                    78, system_charset_info);
-  field_list.push_back(item);
+  Item *item= new (mem_root) Item_empty_string(this, (is_analyze ?
+                                                      "ANALYZE" :
+                                                      "EXPLAIN"),
+                                              78, system_charset_info);
+  field_list.push_back(item, mem_root);
 }
 
 
@@ -2477,55 +2486,79 @@ void THD::make_explain_field_list(List<Item> &field_list, uint8 explain_flags,
 {
   Item *item;
   CHARSET_INFO *cs= system_charset_info;
-  field_list.push_back(item= new Item_return_int("id",3, MYSQL_TYPE_LONGLONG));
+  field_list.push_back(item= new (mem_root)
+                       Item_return_int(this, "id", 3,
+                                       MYSQL_TYPE_LONGLONG), mem_root);
   item->maybe_null= 1;
-  field_list.push_back(new Item_empty_string("select_type", 19, cs));
-  field_list.push_back(item= new Item_empty_string("table", NAME_CHAR_LEN, cs));
+  field_list.push_back(new (mem_root)
+                       Item_empty_string(this, "select_type", 19, cs),
+                       mem_root);
+  field_list.push_back(item= new (mem_root)
+                       Item_empty_string(this, "table", NAME_CHAR_LEN, cs),
+                       mem_root);
   item->maybe_null= 1;
   if (explain_flags & DESCRIBE_PARTITIONS)
   {
     /* Maximum length of string that make_used_partitions_str() can produce */
-    item= new Item_empty_string("partitions", MAX_PARTITIONS * (1 + FN_LEN),
-                                cs);
-    field_list.push_back(item);
+    item= new (mem_root) Item_empty_string(this, "partitions",
+                                           MAX_PARTITIONS * (1 + FN_LEN), cs);
+    field_list.push_back(item, mem_root);
     item->maybe_null= 1;
   }
-  field_list.push_back(item= new Item_empty_string("type", 10, cs));
+  field_list.push_back(item= new (mem_root)
+                       Item_empty_string(this, "type", 10, cs),
+                       mem_root);
   item->maybe_null= 1;
-  field_list.push_back(item=new Item_empty_string("possible_keys",
-						  NAME_CHAR_LEN*MAX_KEY, cs));
+  field_list.push_back(item= new (mem_root)
+                       Item_empty_string(this, "possible_keys",
+                                         NAME_CHAR_LEN*MAX_KEY, cs),
+                       mem_root);
   item->maybe_null=1;
-  field_list.push_back(item=new Item_empty_string("key", NAME_CHAR_LEN, cs));
+  field_list.push_back(item=new (mem_root)
+                       Item_empty_string(this, "key", NAME_CHAR_LEN, cs),
+                       mem_root);
   item->maybe_null=1;
-  field_list.push_back(item=new Item_empty_string("key_len",
-						  NAME_CHAR_LEN*MAX_KEY));
+  field_list.push_back(item=new (mem_root)
+                       Item_empty_string(this, "key_len",
+                                         NAME_CHAR_LEN*MAX_KEY),
+                       mem_root);
   item->maybe_null=1;
-  field_list.push_back(item=new Item_empty_string("ref",
-                                                  NAME_CHAR_LEN*MAX_REF_PARTS,
-                                                  cs));
+  field_list.push_back(item=new (mem_root)
+                       Item_empty_string(this, "ref",
+                                         NAME_CHAR_LEN*MAX_REF_PARTS, cs),
+                       mem_root);
   item->maybe_null=1;
-  field_list.push_back(item= new Item_return_int("rows", 10,
-                                                 MYSQL_TYPE_LONGLONG));
+  field_list.push_back(item= new (mem_root)
+                       Item_return_int(this, "rows", 10, MYSQL_TYPE_LONGLONG),
+                       mem_root);
   if (is_analyze)
   {
-    field_list.push_back(item= new Item_float("r_rows", 0.1234, 10, 4));
+    field_list.push_back(item= new (mem_root)
+                         Item_float(this, "r_rows", 0.1234, 10, 4),
+                         mem_root);
     item->maybe_null=1;
   }
 
   if (is_analyze || (explain_flags & DESCRIBE_EXTENDED))
   {
-    field_list.push_back(item= new Item_float("filtered", 0.1234, 2, 4));
+    field_list.push_back(item= new (mem_root)
+                         Item_float(this, "filtered", 0.1234, 2, 4),
+                         mem_root);
     item->maybe_null=1;
   }
 
   if (is_analyze)
   {
-    field_list.push_back(item= new Item_float("r_filtered", 0.1234, 2, 4));
+    field_list.push_back(item= new (mem_root)
+                         Item_float(this, "r_filtered", 0.1234, 2, 4),
+                         mem_root);
     item->maybe_null=1;
   }
 
   item->maybe_null= 1;
-  field_list.push_back(new Item_empty_string("Extra", 255, cs));
+  field_list.push_back(new (mem_root)
+                       Item_empty_string(this, "Extra", 255, cs),
+                       mem_root);
 }
 
 
@@ -3346,7 +3379,7 @@ int select_max_min_finder_subselect::send_data(List<Item> &items)
   {
     if (!cache)
     {
-      cache= Item_cache::get_cache(val_item);
+      cache= Item_cache::get_cache(thd, val_item);
       switch (val_item->result_type()) {
       case REAL_RESULT:
 	op= &select_max_min_finder_subselect::cmp_real;
@@ -3362,7 +3395,6 @@ int select_max_min_finder_subselect::send_data(List<Item> &items)
         break;
       case ROW_RESULT:
       case TIME_RESULT:
-      case IMPOSSIBLE_RESULT:
         // This case should never be choosen
 	DBUG_ASSERT(0);
 	op= 0;
@@ -3803,7 +3835,7 @@ Statement_map::~Statement_map()
 
 bool my_var_user::set(THD *thd, Item *item)
 {
-  Item_func_set_user_var *suv= new Item_func_set_user_var(name, item);
+  Item_func_set_user_var *suv= new (thd->mem_root) Item_func_set_user_var(thd, name, item);
   suv->save_item_result(item);
   return suv->fix_fields(thd, 0) || suv->update();
 }
@@ -3974,26 +4006,29 @@ void TMP_TABLE_PARAM::init()
 }
 
 
-void thd_increment_bytes_sent(ulong length)
+void thd_increment_bytes_sent(void *thd, ulong length)
 {
-  THD *thd=current_thd;
+  /* thd == 0 when close_connection() calls net_send_error() */
   if (likely(thd != 0))
   {
-    /* current_thd == 0 when close_connection() calls net_send_error() */
-    thd->status_var.bytes_sent+= length;
+    ((THD*) thd)->status_var.bytes_sent+= length;
   }
 }
 
 
-void thd_increment_bytes_received(ulong length)
+void thd_increment_bytes_received(void *thd, ulong length)
 {
-  current_thd->status_var.bytes_received+= length;
+  if (unlikely(!thd))                           // Called from federatedx
+    thd= current_thd;
+  ((THD*) thd)->status_var.bytes_received+= length;
 }
 
 
-void thd_increment_net_big_packet_count(ulong length)
+void thd_increment_net_big_packet_count(void *thd, ulong length)
 {
-  current_thd->status_var.net_big_packet_count+= length;
+  if (unlikely(!thd))                           // Called from federatedx
+    thd= current_thd;
+  ((THD*) thd)->status_var.net_big_packet_count+= length;
 }
 
 

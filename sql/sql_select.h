@@ -745,8 +745,7 @@ public:
                                struct st_position *pos,
                                struct st_position *loose_scan_pos);
   friend bool get_best_combination(JOIN *join);
-  friend int setup_semijoin_dups_elimination(JOIN *join, ulonglong options,
-                                             uint no_jbuf_after);
+  friend int setup_semijoin_loosescan(JOIN *join);
   friend void fix_semijoin_strategies_for_picked_join_order(JOIN *join);
 };
 
@@ -962,6 +961,9 @@ public:
   uint pre_sort_index;
   Item *pre_sort_idx_pushed_cond;
   void clean_pre_sort_join_tab();
+
+  /* List of fields that aren't under an aggregate function */
+  List<Item_field> non_agg_fields;
 
   /*
     For "Using temporary+Using filesort" queries, JOIN::join_tab can point to
@@ -1382,6 +1384,7 @@ public:
     all_fields= fields_arg;
     if (&fields_list != &fields_arg)      /* Avoid valgrind-warning */
       fields_list= fields_arg;
+    non_agg_fields.empty();
     bzero((char*) &keyuse,sizeof(keyuse));
     tmp_table_param.init();
     tmp_table_param.end_write_records= HA_POS_ERROR;
@@ -1850,9 +1853,9 @@ int test_if_item_cache_changed(List<Cached_item> &list);
 int join_init_read_record(JOIN_TAB *tab);
 int join_read_record_no_init(JOIN_TAB *tab);
 void set_position(JOIN *join,uint idx,JOIN_TAB *table,KEYUSE *key);
-inline Item * and_items(Item* cond, Item *item)
+inline Item * and_items(THD *thd, Item* cond, Item *item)
 {
-  return (cond? (new Item_cond_and(cond, item)) : item);
+  return (cond ? (new (thd->mem_root) Item_cond_and(thd, cond, item)) : item);
 }
 bool choose_plan(JOIN *join, table_map join_tables);
 void optimize_wo_join_buffering(JOIN *join, uint first_tab, uint last_tab, 

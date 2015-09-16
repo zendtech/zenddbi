@@ -278,6 +278,8 @@ extern "C" sig_handler handle_fatal_signal(int sig);
 #define ENABLE_TEMP_POOL 0
 #endif
 
+int init_io_cache_encryption();
+
 /* Constants */
 
 #include <welcome_copyright_notice.h> // ORACLE_WELCOME_COPYRIGHT_NOTICE
@@ -487,7 +489,7 @@ ulong delay_key_write_options;
 uint protocol_version;
 uint lower_case_table_names;
 ulong tc_heuristic_recover= 0;
-int32 thread_count;
+int32 thread_count, service_thread_count;
 int32 thread_running;
 int32 slave_open_temp_tables;
 ulong thread_created;
@@ -629,6 +631,7 @@ char server_version[SERVER_VERSION_LENGTH];
 char *mysqld_unix_port, *opt_mysql_tmpdir;
 ulong thread_handling;
 
+my_bool encrypt_binlog;
 my_bool encrypt_tmp_disk_tables, encrypt_tmp_files;
 
 /** name of reference on left expression in rewritten IN subquery */
@@ -1753,7 +1756,7 @@ static void close_connections(void)
   /* All threads has now been aborted */
   DBUG_PRINT("quit",("Waiting for threads to die (count=%u)",thread_count));
   mysql_mutex_lock(&LOCK_thread_count);
-  while (thread_count)
+  while (thread_count || service_thread_count)
   {
     mysql_cond_wait(&COND_thread_count, &LOCK_thread_count);
     DBUG_PRINT("quit",("One thread died (count=%u)",thread_count));
@@ -2108,6 +2111,7 @@ void clean_up(bool print_message)
   xid_cache_free();
   tdc_deinit();
   mdl_destroy();
+  dflt_key_cache= 0;
   key_caches.delete_elements((void (*)(const char*, uchar*)) free_key_cache);
   wt_end();
   multi_keycache_free();
@@ -2150,6 +2154,7 @@ void clean_up(bool print_message)
     sql_print_information(ER_DEFAULT(ER_SHUTDOWN_COMPLETE),my_progname);
   cleanup_errmsgs();
   MYSQL_CALLBACK(thread_scheduler, end, ());
+  thread_scheduler= 0;
   mysql_library_end();
   finish_client_errs();
   (void) my_error_unregister(ER_ERROR_FIRST, ER_ERROR_LAST); // finish server errs
@@ -2296,7 +2301,7 @@ static void set_ports()
     if ((env = getenv("MYSQL_TCP_PORT")))
     {
       mysqld_port= (uint) atoi(env);
-      mark_sys_var_value_origin(&mysqld_port, sys_var::ENV);
+      set_sys_var_value_origin(&mysqld_port, sys_var::ENV);
     }
   }
   if (!mysqld_unix_port)
@@ -2309,7 +2314,7 @@ static void set_ports()
     if ((env = getenv("MYSQL_UNIX_PORT")))
     {
       mysqld_unix_port= env;
-      mark_sys_var_value_origin(&mysqld_unix_port, sys_var::ENV);
+      set_sys_var_value_origin(&mysqld_unix_port, sys_var::ENV);
     }
   }
 }
@@ -2838,8 +2843,26 @@ void delete_running_thd(THD *thd)
   delete thd;
   dec_thread_running();
   thread_safe_decrement32(&thread_count);
-  if (!thread_count)
+  signal_thd_deleted();
+}
+
+/*
+  Send a signal to unblock close_conneciton() if there is no more
+  threads running with a THD attached
+
+  It's safe to check for thread_count and service_thread_count outside
+  of a mutex as we are only interested to see if they where decremented
+  to 0 by a previous unlink_thd() call.
+
+  We should only signal COND_thread_count if both variables are 0,
+  false positives are ok.
+*/
+
+void signal_thd_deleted()
+{
+  if (!thread_count && ! service_thread_count)
   {
+    /* Signal close_connections() that all THD's are freed */
     mysql_mutex_lock(&LOCK_thread_count);
     mysql_cond_broadcast(&COND_thread_count);
     mysql_mutex_unlock(&LOCK_thread_count);
@@ -2993,22 +3016,10 @@ bool one_thread_per_connection_end(THD *thd, bool put_in_cache)
 
   unlink_thd(thd);
 
-  if (put_in_cache && cache_thread() && !wsrep_applier)
+  if (!wsrep_applier && put_in_cache && cache_thread())
     DBUG_RETURN(0);                             // Thread is reused
 
-  /*
-    It's safe to check for thread_count outside of the mutex
-    as we are only interested to see if it was counted to 0 by the
-    above unlink_thd() call. We should only signal COND_thread_count if
-    thread_count is likely to be 0. (false positives are ok)
-  */
-  if (!thread_count)
-  {
-    mysql_mutex_lock(&LOCK_thread_count);
-    DBUG_PRINT("signal", ("Broadcasting COND_thread_count"));
-    mysql_cond_broadcast(&COND_thread_count);
-    mysql_mutex_unlock(&LOCK_thread_count);
-  }
+  signal_thd_deleted();
   DBUG_LEAVE;                                   // Must match DBUG_ENTER()
 #if defined(HAVE_OPENSSL) && !defined(EMBEDDED_LIBRARY)
   ERR_remove_state(0);
@@ -4178,7 +4189,7 @@ static int init_common_variables()
   strmake(pidfile_name, opt_log_basename, sizeof(pidfile_name)-5);
   strmov(fn_ext(pidfile_name),".pid");		// Add proper extension
   SYSVAR_AUTOSIZE(pidfile_name_ptr, pidfile_name);
-  mark_sys_var_value_origin(&opt_tc_log_size, sys_var::AUTO);
+  set_sys_var_value_origin(&opt_tc_log_size, sys_var::AUTO);
 
   /*
     The default-storage-engine entry in my_long_options should have a
@@ -4318,6 +4329,27 @@ static int init_common_variables()
    }
   }
 #endif /* HAVE_SOLARIS_LARGE_PAGES */
+
+
+  /* Fix host_cache_size. */
+  if (IS_SYSVAR_AUTOSIZE(&host_cache_size))
+  {
+    if (max_connections <= 628 - 128)
+      SYSVAR_AUTOSIZE(host_cache_size, 128 + max_connections);
+    else if (max_connections <= ((ulong)(2000 - 628)) * 20 + 500)
+      SYSVAR_AUTOSIZE(host_cache_size, 628 + ((max_connections - 500) / 20));
+    else
+      SYSVAR_AUTOSIZE(host_cache_size, 2000);
+  }
+
+  /* Fix back_log (back_log == 0 added for MySQL compatibility) */
+  if (back_log == 0 || IS_SYSVAR_AUTOSIZE(&back_log))
+  {
+    if ((900 - 50) * 5 >= max_connections)
+     SYSVAR_AUTOSIZE(back_log, (50 + max_connections / 5));
+    else
+     SYSVAR_AUTOSIZE(back_log, 900);
+  }
 
   /* connections and databases needs lots of files */
   {
@@ -4864,9 +4896,16 @@ static int init_server_components()
     unireg_abort(1);
 
   query_cache_set_min_res_unit(query_cache_min_res_unit);
+  query_cache_result_size_limit(query_cache_limit);
+  /* if we set size of QC non zero in config then probably we want it ON */
+  if (query_cache_size != 0 &&
+      global_system_variables.query_cache_type == 0 &&
+      !IS_SYSVAR_AUTOSIZE(&query_cache_size))
+  {
+    global_system_variables.query_cache_type= 1;
+  }
   query_cache_init();
   query_cache_resize(query_cache_size);
-  query_cache_result_size_limit(query_cache_limit);
   my_rnd_init(&sql_rand,(ulong) server_start_time,(ulong) server_start_time/2);
   setup_fpu();
   init_thr_lock();
@@ -5194,6 +5233,9 @@ static int init_server_components()
     }
   }
 
+  if (init_io_cache_encryption())
+    unireg_abort(1);
+
   if (opt_abort)
     unireg_abort(0);
 
@@ -5251,6 +5293,9 @@ static int init_server_components()
   if (default_tmp_storage_engine && !*default_tmp_storage_engine)
     default_tmp_storage_engine= NULL;
 
+  if (enforced_storage_engine && !*enforced_storage_engine)
+    enforced_storage_engine= NULL;
+
   if (init_default_storage_engine(default_tmp_storage_engine, tmp_table_plugin))
     unireg_abort(1);
 
@@ -5292,10 +5337,11 @@ static int init_server_components()
      * but to be able to have mysql_mutex_assert_owner() in code,
      * we do it anyway */
     mysql_mutex_lock(mysql_bin_log.get_log_lock());
-    if (mysql_bin_log.open(opt_bin_logname, LOG_BIN, 0, 0,
-                           WRITE_CACHE, max_binlog_size, 0, TRUE))
-      unireg_abort(1);
+    int r= mysql_bin_log.open(opt_bin_logname, LOG_BIN, 0, 0,
+                              WRITE_CACHE, max_binlog_size, 0, TRUE);
     mysql_mutex_unlock(mysql_bin_log.get_log_lock());
+    if (r)
+      unireg_abort(1);
   }
 
 #ifdef HAVE_REPLICATION
@@ -5543,6 +5589,12 @@ int mysqld_main(int argc, char **argv)
 
   int ho_error __attribute__((unused))= handle_early_options();
 
+  /* fix tdc_size */
+  if (IS_SYSVAR_AUTOSIZE(&tdc_size))
+  {
+    SYSVAR_AUTOSIZE(tdc_size, MY_MIN(400 + tdc_size / 2, 2000));
+  }
+
 #ifdef WITH_PERFSCHEMA_STORAGE_ENGINE
   if (ho_error == 0)
   {
@@ -5553,8 +5605,6 @@ int mysqld_main(int argc, char **argv)
       pfs_param.m_hints.m_table_open_cache= tc_size;
       pfs_param.m_hints.m_max_connections= max_connections;
       pfs_param.m_hints.m_open_files_limit= open_files_limit;
-      /* the performance schema digest size is the same as the SQL layer */
-      pfs_param.m_max_digest_length= max_digest_length;
       PSI_hook= initialize_performance_schema(&pfs_param);
       if (PSI_hook == NULL)
       {
@@ -6165,7 +6215,7 @@ static void bootstrap(MYSQL_FILE *file)
   thd->variables.wsrep_on= 0;
 #endif
   thd->bootstrap=1;
-  my_net_init(&thd->net,(st_vio*) 0, MYF(0));
+  my_net_init(&thd->net,(st_vio*) 0, (void*) 0, MYF(0));
   thd->max_client_packet_length= thd->net.max_packet;
   thd->security_ctx->master_access= ~(ulong)0;
   thd->thread_id= thd->variables.pseudo_thread_id= thread_id++;
@@ -6634,7 +6684,7 @@ void handle_connections_sockets()
           mysql_socket_vio_new(new_sock,
                                is_unix_sock ? VIO_TYPE_SOCKET : VIO_TYPE_TCPIP,
                                is_unix_sock ? VIO_LOCALHOST: 0)) ||
-	my_net_init(&thd->net, vio_tmp, MYF(MY_THREAD_SPECIFIC)))
+	my_net_init(&thd->net, vio_tmp, thd, MYF(MY_THREAD_SPECIFIC)))
     {
       /*
         Only delete the temporary vio if we didn't already attach it to the
@@ -6759,7 +6809,7 @@ pthread_handler_t handle_connections_namedpipes(void *arg)
     }
     set_current_thd(thd);
     if (!(thd->net.vio= vio_new_win32pipe(hConnectedPipe)) ||
-	my_net_init(&thd->net, thd->net.vio, MYF(MY_THREAD_SPECIFIC)))
+	my_net_init(&thd->net, thd->net.vio, thd, MYF(MY_THREAD_SPECIFIC)))
     {
       close_connection(thd, ER_OUT_OF_RESOURCES);
       delete thd;
@@ -6956,7 +7006,7 @@ pthread_handler_t handle_connections_shared_memory(void *arg)
                                                    event_server_wrote,
                                                    event_server_read,
                                                    event_conn_closed)) ||
-        my_net_init(&thd->net, thd->net.vio, MYF(MY_THREAD_SPECIFIC)))
+        my_net_init(&thd->net, thd->net.vio, thd, MYF(MY_THREAD_SPECIFIC)))
     {
       close_connection(thd, ER_OUT_OF_RESOURCES);
       errmsg= 0;
@@ -7529,7 +7579,6 @@ struct my_option my_long_options[]=
 #endif
 
   /* The following options exist in 5.6 but not in 10.0 */
-  MYSQL_TO_BE_IMPLEMENTED_OPTION("default-tmp-storage-engine"),
   MYSQL_COMPATIBILITY_OPTION("log-raw"),
   MYSQL_COMPATIBILITY_OPTION("log-bin-use-v1-row-events"),
   MYSQL_TO_BE_IMPLEMENTED_OPTION("default-authentication-plugin"),
@@ -8588,7 +8637,8 @@ static int mysql_init_variables(void)
   cleanup_done= 0;
   server_id_supplied= 0;
   test_flags= select_errors= dropping_tables= ha_open_options=0;
-  thread_count= thread_running= kill_cached_threads= wake_thread=0;
+  thread_count= thread_running= kill_cached_threads= wake_thread= 0;
+  service_thread_count= 0;
   slave_open_temp_tables= 0;
   cached_thread_count= 0;
   opt_endinfo= using_udf_functions= 0;
@@ -8759,7 +8809,7 @@ static int mysql_init_variables(void)
   if (!(tmpenv = getenv("MY_BASEDIR_VERSION")))
     tmpenv = DEFAULT_MYSQL_HOME;
   strmake_buf(mysql_home, tmpenv);
-  mark_sys_var_value_origin(&mysql_home_ptr, sys_var::ENV);
+  set_sys_var_value_origin(&mysql_home_ptr, sys_var::ENV);
 #endif
 
   if (wsrep_init_vars())
@@ -8774,6 +8824,11 @@ mysqld_get_one_option(int optid, const struct my_option *opt, char *argument)
   if (opt->app_type)
   {
     sys_var *var= (sys_var*) opt->app_type;
+    if (argument == autoset_my_option)
+    {
+      var->value_origin= sys_var::AUTO;
+      return 0;
+    }
     var->value_origin= sys_var::CONFIG;
   }
 
@@ -8886,8 +8941,8 @@ mysqld_get_one_option(int optid, const struct my_option *opt, char *argument)
     make_default_log_name(&opt_bin_logname, "-bin", true);
     /* Binary log index file */
     make_default_log_name(&opt_binlog_index_name, "-bin.index", true);
-    mark_sys_var_value_origin(&opt_logname, sys_var::AUTO);
-    mark_sys_var_value_origin(&opt_slow_logname, sys_var::AUTO);
+    set_sys_var_value_origin(&opt_logname, sys_var::AUTO);
+    set_sys_var_value_origin(&opt_slow_logname, sys_var::AUTO);
     if (!opt_logname || !opt_slow_logname || !opt_bin_logname ||
         !opt_binlog_index_name)
       return 1;
@@ -8897,7 +8952,7 @@ mysqld_get_one_option(int optid, const struct my_option *opt, char *argument)
     make_default_log_name(&opt_relay_logname, "-relay-bin", true);
     /* Relay log index file */
     make_default_log_name(&opt_relaylog_index_name, "-relay-bin.index", true);
-    mark_sys_var_value_origin(&opt_relay_logname, sys_var::AUTO);
+    set_sys_var_value_origin(&opt_relay_logname, sys_var::AUTO);
     if (!opt_relay_logname || !opt_relaylog_index_name)
       return 1;
 #endif
@@ -9093,6 +9148,7 @@ mysqld_get_one_option(int optid, const struct my_option *opt, char *argument)
     max_long_data_size_used= true;
     break;
   case OPT_PFS_INSTRUMENT:
+  {
 #ifdef WITH_PERFSCHEMA_STORAGE_ENGINE
 #ifndef EMBEDDED_LIBRARY
     /* Parse instrument name and value from argument string */
@@ -9161,6 +9217,7 @@ mysqld_get_one_option(int optid, const struct my_option *opt, char *argument)
 #endif /* EMBEDDED_LIBRARY */
 #endif
     break;
+  }
   }
   return 0;
 }
