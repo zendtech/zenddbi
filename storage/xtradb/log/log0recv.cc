@@ -446,9 +446,10 @@ recv_sys_init(
 }
 
 /********************************************************//**
-Empties the hash table when it has been fully processed. */
+Empties the hash table when it has been fully processed.
+@return DB_SUCCESS when successfull or DB_ERROR when fails. */
 static
-void
+dberr_t
 recv_sys_empty_hash(void)
 /*=====================*/
 {
@@ -462,13 +463,15 @@ recv_sys_empty_hash(void)
 			" log records on it %lu\n",
 			(ulong) recv_sys->n_addrs,
 			(ulong) recv_max_parsed_page_no);
-		ut_error;
+		return DB_ERROR;
 	}
 
 	hash_table_free(recv_sys->addr_hash);
 	mem_heap_empty(recv_sys->heap);
 
 	recv_sys->addr_hash = hash_create(buf_pool_get_curr_size() / 512);
+
+	return DB_SUCCESS;
 }
 
 #ifndef UNIV_HOTBACKUP
@@ -1154,82 +1157,7 @@ recv_parse_or_apply_log_rec_body(
 		break;
 #endif /* UNIV_LOG_LSN_DEBUG */
 	case MLOG_1BYTE: case MLOG_2BYTES: case MLOG_4BYTES: case MLOG_8BYTES:
-#ifdef UNIV_DEBUG
-		if (page && page_type == FIL_PAGE_TYPE_ALLOCATED
-		    && end_ptr >= ptr + 2) {
-			/* It is OK to set FIL_PAGE_TYPE and certain
-			list node fields on an empty page.  Any other
-			write is not OK. */
-
-			/* NOTE: There may be bogus assertion failures for
-			dict_hdr_create(), trx_rseg_header_create(),
-			trx_sys_create_doublewrite_buf(), and
-			trx_sysf_create().
-			These are only called during database creation. */
-			ulint	offs = mach_read_from_2(ptr);
-
-			switch (type) {
-			default:
-				ut_error;
-			case MLOG_2BYTES:
-				/* Note that this can fail when the
-				redo log been written with something
-				older than InnoDB Plugin 1.0.4. */
-				ut_ad(offs == FIL_PAGE_TYPE
-				      || offs == IBUF_TREE_SEG_HEADER
-				      + IBUF_HEADER + FSEG_HDR_OFFSET
-				      || offs == PAGE_BTR_IBUF_FREE_LIST
-				      + PAGE_HEADER + FIL_ADDR_BYTE
-				      || offs == PAGE_BTR_IBUF_FREE_LIST
-				      + PAGE_HEADER + FIL_ADDR_BYTE
-				      + FIL_ADDR_SIZE
-				      || offs == PAGE_BTR_SEG_LEAF
-				      + PAGE_HEADER + FSEG_HDR_OFFSET
-				      || offs == PAGE_BTR_SEG_TOP
-				      + PAGE_HEADER + FSEG_HDR_OFFSET
-				      || offs == PAGE_BTR_IBUF_FREE_LIST_NODE
-				      + PAGE_HEADER + FIL_ADDR_BYTE
-				      + 0 /*FLST_PREV*/
-				      || offs == PAGE_BTR_IBUF_FREE_LIST_NODE
-				      + PAGE_HEADER + FIL_ADDR_BYTE
-				      + FIL_ADDR_SIZE /*FLST_NEXT*/);
-				break;
-			case MLOG_4BYTES:
-				/* Note that this can fail when the
-				redo log been written with something
-				older than InnoDB Plugin 1.0.4. */
-				ut_ad(0
-				      || offs == IBUF_TREE_SEG_HEADER
-				      + IBUF_HEADER + FSEG_HDR_SPACE
-				      || offs == IBUF_TREE_SEG_HEADER
-				      + IBUF_HEADER + FSEG_HDR_PAGE_NO
-				      || offs == PAGE_BTR_IBUF_FREE_LIST
-				      + PAGE_HEADER/* flst_init */
-				      || offs == PAGE_BTR_IBUF_FREE_LIST
-				      + PAGE_HEADER + FIL_ADDR_PAGE
-				      || offs == PAGE_BTR_IBUF_FREE_LIST
-				      + PAGE_HEADER + FIL_ADDR_PAGE
-				      + FIL_ADDR_SIZE
-				      || offs == PAGE_BTR_SEG_LEAF
-				      + PAGE_HEADER + FSEG_HDR_PAGE_NO
-				      || offs == PAGE_BTR_SEG_LEAF
-				      + PAGE_HEADER + FSEG_HDR_SPACE
-				      || offs == PAGE_BTR_SEG_TOP
-				      + PAGE_HEADER + FSEG_HDR_PAGE_NO
-				      || offs == PAGE_BTR_SEG_TOP
-				      + PAGE_HEADER + FSEG_HDR_SPACE
-				      || offs == PAGE_BTR_IBUF_FREE_LIST_NODE
-				      + PAGE_HEADER + FIL_ADDR_PAGE
-				      + 0 /*FLST_PREV*/
-				      || offs == PAGE_BTR_IBUF_FREE_LIST_NODE
-				      + PAGE_HEADER + FIL_ADDR_PAGE
-				      + FIL_ADDR_SIZE /*FLST_NEXT*/
-				      || offs ==
-				      FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID);
-				break;
-			}
-		}
-#endif /* UNIV_DEBUG */
+		/* Note that crypt data can be set to empty page */
 		ptr = mlog_parse_nbytes(type, ptr, end_ptr, page, page_zip);
 		break;
 	case MLOG_REC_INSERT: case MLOG_COMP_REC_INSERT:
@@ -1401,7 +1329,7 @@ recv_parse_or_apply_log_rec_body(
 		ptr = fsp_parse_init_file_page(ptr, end_ptr, block);
 		break;
 	case MLOG_WRITE_STRING:
-		ut_ad(!page || page_type != FIL_PAGE_TYPE_ALLOCATED);
+		/* Allow setting crypt_data also for empty page */
 		ptr = mlog_parse_string(ptr, end_ptr, page, page_zip);
 		break;
 	case MLOG_FILE_RENAME:
@@ -1922,9 +1850,10 @@ recv_read_in_area(
 
 /*******************************************************************//**
 Empties the hash table of stored log records, applying them to appropriate
-pages. */
+pages.
+@return DB_SUCCESS when successfull or DB_ERROR when fails. */
 UNIV_INTERN
-void
+dberr_t
 recv_apply_hashed_log_recs(
 /*=======================*/
 	ibool	allow_ibuf)	/*!< in: if TRUE, also ibuf operations are
@@ -1941,6 +1870,7 @@ recv_apply_hashed_log_recs(
 	ulint	i;
 	ibool	has_printed	= FALSE;
 	mtr_t	mtr;
+	dberr_t err = DB_SUCCESS;
 loop:
 	mutex_enter(&(recv_sys->mutex));
 
@@ -2074,13 +2004,15 @@ loop:
 	recv_sys->apply_log_recs = FALSE;
 	recv_sys->apply_batch_on = FALSE;
 
-	recv_sys_empty_hash();
+	err = recv_sys_empty_hash();
 
 	if (has_printed) {
 		fprintf(stderr, "InnoDB: Apply batch completed\n");
 	}
 
 	mutex_exit(&(recv_sys->mutex));
+
+	return err;
 }
 #else /* !UNIV_HOTBACKUP */
 /*******************************************************************//**
@@ -2403,7 +2335,6 @@ recv_report_corrupt_log(
 	if (!srv_force_recovery) {
 		fputs("InnoDB: Set innodb_force_recovery"
 		      " to ignore this error.\n", stderr);
-		ut_error;
 	}
 #endif /* !UNIV_HOTBACKUP */
 
@@ -2426,9 +2357,11 @@ static
 ibool
 recv_parse_log_recs(
 /*================*/
-	ibool	store_to_hash)	/*!< in: TRUE if the records should be stored
+	ibool	store_to_hash,	/*!< in: TRUE if the records should be stored
 				to the hash table; this is set to FALSE if just
 				debug checking is needed */
+	dberr_t* err)		/*!< out: DB_SUCCESS if successfull,
+				DB_ERROR if parsing fails. */
 {
 	byte*	ptr;
 	byte*	end_ptr;
@@ -2537,7 +2470,8 @@ loop:
 						(ulint) type, space,
 						(char*)(body + 2));
 
-					ut_error;
+					*err = DB_ERROR;
+					return(FALSE);
 				}
 			}
 #endif
@@ -2833,17 +2767,18 @@ recv_scan_log_recs(
 
 			if (log_crypt_block_maybe_encrypted(log_block,
 					&log_crypt_err)) {
-				/* Log block maybe encrypted */
+				/* Log block maybe encrypted finish processing*/
 				log_crypt_print_error(log_crypt_err);
 				*err = DB_ERROR;
 				return (TRUE);
 			}
 
-			/* Crash if we encounter a garbage log block */
+			/* Stop if we encounter a garbage log block */
 			if (!srv_force_recovery) {
 				fputs("InnoDB: Set innodb_force_recovery"
 				      " to ignore this error.\n", stderr);
-				ut_error;
+				*err = DB_ERROR;
+				return (TRUE);
 			}
 
 			break;
@@ -2881,7 +2816,8 @@ recv_scan_log_recs(
 			/* This is not really an error, but currently
 			we stop here in the debug version: */
 
-			ut_error;
+			*err = DB_ERROR;
+			return (TRUE);
 #endif
 			break;
 		}
@@ -2947,7 +2883,8 @@ recv_scan_log_recs(
 					      " innodb_force_recovery"
 					      " to ignore this error.\n",
 					      stderr);
-					ut_error;
+					*err = DB_ERROR;
+					return (TRUE);
 				}
 #endif /* !UNIV_HOTBACKUP */
 
@@ -2989,7 +2926,11 @@ recv_scan_log_recs(
 	if (more_data && !recv_sys->found_corrupt_log) {
 		/* Try to parse more log records */
 
-		recv_parse_log_recs(store_to_hash);
+		recv_parse_log_recs(store_to_hash, err);
+
+		if (*err != DB_SUCCESS) {
+			return (TRUE);
+		}
 
 #ifndef UNIV_HOTBACKUP
 		if (store_to_hash
@@ -3001,7 +2942,12 @@ recv_scan_log_recs(
 			log yet: they would be produced by ibuf
 			operations */
 
-			recv_apply_hashed_log_recs(FALSE);
+			*err = recv_apply_hashed_log_recs(FALSE);
+
+			if (*err != DB_SUCCESS) {
+				/* Finish processing because of error */
+				return (TRUE);
+			}
 		}
 #endif /* !UNIV_HOTBACKUP */
 
@@ -3342,7 +3288,7 @@ recv_recovery_from_checkpoint_start_func(
 #ifdef UNIV_LOG_ARCHIVE
 		lsn_t	old_scanned_lsn	= recv_sys->scanned_lsn;
 #endif /* UNIV_LOG_ARCHIVE */
-		dberr_t err;
+		dberr_t err = DB_SUCCESS;
 
 		recv_group_scan_log_recs(group, &contiguous_lsn,
 			&group_scanned_lsn, &err);
@@ -3444,7 +3390,7 @@ recv_recovery_from_checkpoint_start_func(
 
 		/* No harm in trying to do RO access. */
 		if (!srv_read_only_mode) {
-			ut_error;
+			return (DB_READ_ONLY);
 		}
 
 		return(DB_ERROR);

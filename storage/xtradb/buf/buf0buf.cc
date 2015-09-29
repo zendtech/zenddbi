@@ -981,7 +981,7 @@ buf_page_print(
 			mach_read_from_4(read_buf
 					 + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID));
 
-		ulint page_type = mach_read_from_4(read_buf + FIL_PAGE_TYPE);
+		ulint page_type = fil_page_get_type(read_buf);
 
 		fprintf(stderr, "InnoDB: page type %ld meaning %s\n", page_type,
 			fil_get_page_type_name(page_type));
@@ -6070,6 +6070,7 @@ buf_pool_mutex_exit(
 Reserve unused slot from temporary memory array and allocate necessary
 temporary memory if not yet allocated.
 @return reserved slot */
+UNIV_INTERN
 buf_tmp_buffer_t*
 buf_pool_reserve_tmp_slot(
 /*======================*/

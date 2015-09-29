@@ -5045,7 +5045,7 @@ add_ft_keys(DYNAMIC_ARRAY *keyuse_array,
     Item_func::Functype functype=  func->functype();
     if (functype == Item_func::FT_FUNC)
       cond_func=(Item_func_match *)cond;
-    else if (func->arg_count == 2)
+    else if (func->argument_count() == 2)
     {
       Item *arg0=(Item *)(func->arguments()[0]),
            *arg1=(Item *)(func->arguments()[1]);
@@ -12766,7 +12766,7 @@ static bool check_row_equality(THD *thd, const Arg_comparator *comparators,
       is_converted= check_simple_equality(thd,
                                           Item::Context(Item::ANY_SUBST,
                                                         tmp->compare_type(),
-                                                 tmp->cmp_collation.collation),
+                                                  tmp->compare_collation()),
                                           left_item, right_item,
                                           cond_equal);
     }  
@@ -13931,6 +13931,29 @@ can_change_cond_ref_to_const(Item_bool_func2 *target,
     return
       target->compare_collation() == source->compare_collation() &&
       target_value->collation.collation == source_const->collation.collation;
+  }
+  if (target->compare_type() == TIME_RESULT)
+  {
+    if (target_value->cmp_type() != TIME_RESULT)
+    {
+      /*
+        Can't rewrite:
+          WHERE COALESCE(time_column)='00:00:00'
+            AND COALESCE(time_column)=DATE'2015-09-11'
+        to
+          WHERE DATE'2015-09-11'='00:00:00'
+            AND COALESCE(time_column)=DATE'2015-09-11'
+        because the left part will erroneously try to parse '00:00:00'
+        as DATE, not as TIME.
+
+        TODO: It could still be rewritten to:
+          WHERE DATE'2015-09-11'=TIME'00:00:00'
+            AND COALESCE(time_column)=DATE'2015-09-11'
+        i.e. we need to replace both target_expr and target_value
+        at the same time. This is not supported yet.
+      */
+      return false;
+    }
   }
   return true; // Non-string comparison
 }
@@ -23144,13 +23167,13 @@ void free_underlaid_joins(THD *thd, SELECT_LEX *select)
 static bool change_group_ref(THD *thd, Item_func *expr, ORDER *group_list,
                              bool *changed)
 {
-  if (expr->arg_count)
+  if (expr->argument_count())
   {
     Name_resolution_context *context= &thd->lex->current_select->context;
     Item **arg,**arg_end;
     bool arg_changed= FALSE;
     for (arg= expr->arguments(),
-         arg_end= expr->arguments()+expr->arg_count;
+         arg_end= expr->arguments() + expr->argument_count();
          arg != arg_end; arg++)
     {
       Item *item= *arg;
@@ -23959,7 +23982,10 @@ void JOIN_TAB::save_explain_data(Explain_table_access *eta,
       eta->pushed_index_cond= table->file->pushed_idx_cond;
     }
     else if (cache_idx_cond)
+    {
       eta->push_extra(ET_USING_INDEX_CONDITION_BKA);
+      eta->pushed_index_cond= cache_idx_cond;
+    }
 
     if (quick_type == QUICK_SELECT_I::QS_TYPE_ROR_UNION || 
         quick_type == QUICK_SELECT_I::QS_TYPE_ROR_INTERSECT ||
@@ -24174,6 +24200,11 @@ int JOIN::save_explain_data_intern(Explain_query *output, bool need_tmp_table,
       xpl_sel->using_filesort= true;
 
     xpl_sel->exec_const_cond= exec_const_cond;
+    if (tmp_having)
+      xpl_sel->having= tmp_having;
+    else
+      xpl_sel->having= having;
+    xpl_sel->having_value= having_value;
 
     JOIN_TAB* const first_top_tab= join->first_breadth_first_optimization_tab();
     JOIN_TAB* prev_bush_root_tab= NULL;

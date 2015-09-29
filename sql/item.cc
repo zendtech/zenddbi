@@ -317,8 +317,7 @@ my_decimal *Item::val_decimal_from_string(my_decimal *decimal_value)
   if (!(res= val_str(&str_value)))
     return 0;
 
-  return decimal_from_string_with_check(decimal_value,
-                                        res->charset(), res->ptr(), res->end());
+  return decimal_from_string_with_check(decimal_value, res);
 }
 
 
@@ -2035,8 +2034,9 @@ void my_coll_agg_error(Item** args, uint count, const char *fname,
 }
 
 
-bool agg_item_collations(DTCollation &c, const char *fname,
-                         Item **av, uint count, uint flags, int item_sep)
+bool Item_func_or_sum::agg_item_collations(DTCollation &c, const char *fname,
+                                           Item **av, uint count,
+                                           uint flags, int item_sep)
 {
   uint i;
   Item **arg;
@@ -2081,16 +2081,10 @@ bool agg_item_collations(DTCollation &c, const char *fname,
 }
 
 
-bool agg_item_collations_for_comparison(DTCollation &c, const char *fname,
-                                        Item **av, uint count, uint flags)
-{
-  return (agg_item_collations(c, fname, av, count,
-                              flags | MY_COLL_DISALLOW_NONE, 1));
-}
-
-
-bool agg_item_set_converter(DTCollation &coll, const char *fname,
-                            Item **args, uint nargs, uint flags, int item_sep)
+bool Item_func_or_sum::agg_item_set_converter(const DTCollation &coll,
+                                              const char *fname,
+                                              Item **args, uint nargs,
+                                              uint flags, int item_sep)
 {
   Item **arg, *safe_args[2]= {NULL, NULL};
 
@@ -2140,8 +2134,6 @@ bool agg_item_set_converter(DTCollation &coll, const char *fname,
       res= TRUE;
       break; // we cannot return here, we need to restore "arena".
     }
-    if ((*arg)->type() == Item::FIELD_ITEM)
-      ((Item_field *)(*arg))->no_const_subst= 1;
     /*
       If in statement prepare, then we create a converter for two
       constant items, do it once and then reuse it.
@@ -2169,46 +2161,6 @@ bool agg_item_set_converter(DTCollation &coll, const char *fname,
 }
 
 
-/* 
-  Collect arguments' character sets together.
-  We allow to apply automatic character set conversion in some cases.
-  The conditions when conversion is possible are:
-  - arguments A and B have different charsets
-  - A wins according to coercibility rules
-    (i.e. a column is stronger than a string constant,
-     an explicit COLLATE clause is stronger than a column)
-  - character set of A is either superset for character set of B,
-    or B is a string constant which can be converted into the
-    character set of A without data loss.
-    
-  If all of the above is true, then it's possible to convert
-  B into the character set of A, and then compare according
-  to the collation of A.
-  
-  For functions with more than two arguments:
-
-    collect(A,B,C) ::= collect(collect(A,B),C)
-
-  Since this function calls THD::change_item_tree() on the passed Item **
-  pointers, it is necessary to pass the original Item **'s, not copies.
-  Otherwise their values will not be properly restored (see BUG#20769).
-  If the items are not consecutive (eg. args[2] and args[5]), use the
-  item_sep argument, ie.
-
-    agg_item_charsets(coll, fname, &args[2], 2, flags, 3)
-
-*/
-
-bool agg_item_charsets(DTCollation &coll, const char *fname,
-                       Item **args, uint nargs, uint flags, int item_sep)
-{
-  if (agg_item_collations(coll, fname, args, nargs, flags, item_sep))
-    return TRUE;
-
-  return agg_item_set_converter(coll, fname, args, nargs, flags, item_sep);
-}
-
-
 void Item_ident_for_show::make_field(Send_field *tmp_field)
 {
   tmp_field->table_name= tmp_field->org_table_name= table_name;
@@ -2226,7 +2178,7 @@ void Item_ident_for_show::make_field(Send_field *tmp_field)
 
 Item_field::Item_field(THD *thd, Field *f)
   :Item_ident(thd, 0, NullS, *f->table_name, f->field_name),
-   item_equal(0), no_const_subst(0),
+   item_equal(0),
    have_privileges(0), any_privileges(0)
 {
   set_field(f);
@@ -2249,7 +2201,7 @@ Item_field::Item_field(THD *thd, Field *f)
 Item_field::Item_field(THD *thd, Name_resolution_context *context_arg,
                        Field *f)
   :Item_ident(thd, context_arg, f->table->s->db.str, *f->table_name, f->field_name),
-   item_equal(0), no_const_subst(0),
+   item_equal(0),
    have_privileges(0), any_privileges(0)
 {
   /*
@@ -2292,7 +2244,7 @@ Item_field::Item_field(THD *thd, Name_resolution_context *context_arg,
                        const char *db_arg,const char *table_name_arg,
                        const char *field_name_arg)
   :Item_ident(thd, context_arg, db_arg, table_name_arg, field_name_arg),
-   field(0), item_equal(0), no_const_subst(0),
+   field(0), item_equal(0),
    have_privileges(0), any_privileges(0)
 {
   SELECT_LEX *select= thd->lex->current_select;
@@ -2310,7 +2262,6 @@ Item_field::Item_field(THD *thd, Item_field *item)
   :Item_ident(thd, item),
    field(item->field),
    item_equal(item->item_equal),
-   no_const_subst(item->no_const_subst),
    have_privileges(item->have_privileges),
    any_privileges(item->any_privileges)
 {
@@ -2987,25 +2938,7 @@ void Item_string::print(String *str, enum_query_type query_type)
     }
     else
     {
-      if (my_charset_same(str_value.charset(), system_charset_info))
-        str_value.print(str); // already in system_charset_info
-      else // need to convert
-      {
-        THD *thd= current_thd;
-        LEX_STRING utf8_lex_str;
-
-        thd->convert_string(&utf8_lex_str,
-                            system_charset_info,
-                            str_value.c_ptr_safe(),
-                            str_value.length(),
-                            str_value.charset());
-
-        String utf8_str(utf8_lex_str.str,
-                        utf8_lex_str.length,
-                        system_charset_info);
-
-        utf8_str.print(str);
-      }
+      str_value.print(str, system_charset_info);
     }
   }
   else
@@ -3021,10 +2954,7 @@ void Item_string::print(String *str, enum_query_type query_type)
 double Item_string::val_real()
 {
   DBUG_ASSERT(fixed == 1);
-  return double_from_string_with_check(str_value.charset(),
-                                       str_value.ptr(), 
-                                       str_value.ptr() +
-                                       str_value.length());
+  return double_from_string_with_check(&str_value);
 }
 
 
@@ -3035,8 +2965,7 @@ double Item_string::val_real()
 longlong Item_string::val_int()
 {
   DBUG_ASSERT(fixed == 1);
-  return longlong_from_string_with_check(str_value.charset(), str_value.ptr(),
-                                         str_value.ptr()+ str_value.length());
+  return longlong_from_string_with_check(&str_value);
 }
 
 
@@ -3330,7 +3259,7 @@ bool Item_param::set_from_user_var(THD *thd, const user_var_entry *entry)
       break;
     case STRING_RESULT:
     {
-      CHARSET_INFO *fromcs= entry->collation.collation;
+      CHARSET_INFO *fromcs= entry->charset();
       CHARSET_INFO *tocs= thd->variables.collation_connection;
       uint32 dummy_offset;
 
@@ -3474,10 +3403,7 @@ double Item_param::val_real()
   case STRING_VALUE:
   case LONG_DATA_VALUE:
   {
-    int dummy_err;
-    char *end_not_used;
-    return my_strntod(str_value.charset(), (char*) str_value.ptr(),
-                      str_value.length(), &end_not_used, &dummy_err);
+    return double_from_string_with_check(&str_value);
   }
   case TIME_VALUE:
     /*
@@ -3510,9 +3436,7 @@ longlong Item_param::val_int()
   case STRING_VALUE:
   case LONG_DATA_VALUE:
     {
-      int dummy_err;
-      return my_strntoll(str_value.charset(), str_value.ptr(),
-                         str_value.length(), 10, (char**) 0, &dummy_err);
+      return longlong_from_string_with_check(&str_value);
     }
   case TIME_VALUE:
     return (longlong) TIME_to_ulonglong(&value.time);
@@ -3538,8 +3462,7 @@ my_decimal *Item_param::val_decimal(my_decimal *dec)
     return dec;
   case STRING_VALUE:
   case LONG_DATA_VALUE:
-    string2my_decimal(E_DEC_FATAL_ERROR, &str_value, dec);
-    return dec;
+    return decimal_from_string_with_check(dec, &str_value);
   case TIME_VALUE:
   {
     return TIME_to_my_decimal(&value.time, dec);
@@ -5335,7 +5258,7 @@ Item *Item_field::propagate_equal_fields(THD *thd,
                                          const Context &ctx,
                                          COND_EQUAL *arg)
 {
-  if (no_const_subst || !(item_equal= find_item_equal(arg)))
+  if (!(item_equal= find_item_equal(arg)))
     return this;
   if (!field->can_be_substituted_to_equal_item(ctx, item_equal))
   {
@@ -5369,20 +5292,6 @@ Item *Item_field::propagate_equal_fields(THD *thd,
     return this;
   }
   return item;
-}
-
-
-/**
-  Mark the item to not be part of substitution if it's not a binary item.
-
-  See comments in Arg_comparator::set_compare_func() for details.
-*/
-
-bool Item_field::set_no_const_sub(uchar *arg)
-{
-  if (field->charset() != &my_charset_bin)
-    no_const_subst=1;
-  return FALSE;
 }
 
 
@@ -8596,7 +8505,8 @@ void resolve_const_item(THD *thd, Item **ref, Item *comp_item)
     bool is_null;
     Item **ref_copy= ref;
     /* the following call creates a constant and puts it in new_item */
-    get_datetime_value(thd, &ref_copy, &new_item, comp_item, &is_null);
+    enum_field_types type= item->field_type_for_temporal_comparison(comp_item);
+    get_datetime_value(thd, &ref_copy, &new_item, type, &is_null);
     if (is_null)
       new_item= new (mem_root) Item_null(thd, name);
     break;
@@ -8936,9 +8846,25 @@ Item_cache_temporal::Item_cache_temporal(THD *thd,
 }
 
 
-longlong Item_cache_temporal::val_temporal_packed()
+longlong Item_cache_temporal::val_datetime_packed()
 {
   DBUG_ASSERT(fixed == 1);
+  if (Item_cache_temporal::field_type() == MYSQL_TYPE_TIME)
+    return Item::val_datetime_packed(); // TIME-to-DATETIME conversion needed
+  if ((!value_cached && !cache_value()) || null_value)
+  {
+    null_value= TRUE;
+    return 0;
+  }
+  return value;
+}
+
+
+longlong Item_cache_temporal::val_time_packed()
+{
+  DBUG_ASSERT(fixed == 1);
+  if (Item_cache_temporal::field_type() != MYSQL_TYPE_TIME)
+    return Item::val_time_packed(); // DATETIME-to-TIME conversion needed
   if ((!value_cached && !cache_value()) || null_value)
   {
     null_value= TRUE;
@@ -9192,28 +9118,18 @@ bool Item_cache_str::cache_value()
 double Item_cache_str::val_real()
 {
   DBUG_ASSERT(fixed == 1);
-  int err_not_used;
-  char *end_not_used;
   if (!has_value())
     return 0.0;
-  if (value)
-    return my_strntod(value->charset(), (char*) value->ptr(),
-		      value->length(), &end_not_used, &err_not_used);
-  return (double) 0;
+  return value ? double_from_string_with_check(value) :  0.0;
 }
 
 
 longlong Item_cache_str::val_int()
 {
   DBUG_ASSERT(fixed == 1);
-  int err;
   if (!has_value())
     return 0;
-  if (value)
-    return my_strntoll(value->charset(), value->ptr(),
-		       value->length(), 10, (char**) 0, &err);
-  else
-    return (longlong)0;
+  return value ? longlong_from_string_with_check(value) : 0;
 }
 
 
@@ -9231,11 +9147,7 @@ my_decimal *Item_cache_str::val_decimal(my_decimal *decimal_val)
   DBUG_ASSERT(fixed == 1);
   if (!has_value())
     return NULL;
-  if (value)
-    string2my_decimal(E_DEC_FATAL_ERROR, value, decimal_val);
-  else
-    decimal_val= 0;
-  return decimal_val;
+  return value ? decimal_from_string_with_check(decimal_val, value) : 0;
 }
 
 

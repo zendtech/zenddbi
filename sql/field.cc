@@ -1992,6 +1992,16 @@ my_decimal* Field_num::val_decimal(my_decimal *decimal_value)
 }
 
 
+bool Field_num::get_date(MYSQL_TIME *ltime,ulonglong fuzzydate)
+{
+  ASSERT_COLUMN_MARKED_FOR_READ;
+  longlong nr= val_int();
+  bool neg= !(flags & UNSIGNED_FLAG) && nr < 0;
+  return int_to_datetime_with_warn(neg, neg ? -nr : nr, ltime, fuzzydate,
+                                   field_name);
+}
+
+
 Field_str::Field_str(uchar *ptr_arg,uint32 len_arg, uchar *null_ptr_arg,
                      uchar null_bit_arg, utype unireg_check_arg,
                      const char *field_name_arg, CHARSET_INFO *charset_arg)
@@ -3215,6 +3225,14 @@ String *Field_new_decimal::val_str(String *val_buffer,
                     fixed_precision, dec, '0', val_buffer);
   val_buffer->set_charset(&my_charset_numeric);
   return val_buffer;
+}
+
+
+bool Field_new_decimal::get_date(MYSQL_TIME *ltime, ulonglong fuzzydate)
+{
+  my_decimal value;
+  return decimal_to_datetime_with_warn(val_decimal(&value),
+                                       ltime, fuzzydate, field_name);
 }
 
 
@@ -10018,13 +10036,22 @@ bool Create_field::check(THD *thd)
 
   /*
     Set NO_DEFAULT_VALUE_FLAG if this field doesn't have a default value and
-    it is NOT NULL, not an AUTO_INCREMENT field and not a TIMESTAMP.
+    it is NOT NULL, not an AUTO_INCREMENT field.
     We need to do this check here and in mysql_create_prepare_table() as
     sp_head::fill_field_definition() calls this function.
   */
-  if (!def && unireg_check == Field::NONE &&
-      (flags & NOT_NULL_FLAG) && !is_timestamp_type(sql_type))
-    flags|= NO_DEFAULT_VALUE_FLAG;
+  if (!def && unireg_check == Field::NONE && (flags & NOT_NULL_FLAG))
+  {
+    /*
+      TIMESTAMP columns get implicit DEFAULT value when
+      explicit_defaults_for_timestamp is not set.
+    */
+    if (opt_explicit_defaults_for_timestamp ||
+        !is_timestamp_type(sql_type))
+    {
+      flags|= NO_DEFAULT_VALUE_FLAG;
+    }
+  }
 
   if (!(flags & BLOB_FLAG) &&
       ((length > max_field_charlength &&
