@@ -72,7 +72,6 @@ static int copy_data_between_tables(THD *thd, TABLE *from,TABLE *to,
                                     Alter_table_ctx *alter_ctx);
 
 static bool prepare_blob_field(THD *thd, Create_field *sql_field);
-static bool check_engine(THD *, const char *, const char *, HA_CREATE_INFO *);
 static int mysql_prepare_create_table(THD *, HA_CREATE_INFO *, Alter_info *,
                                       uint *, handler *, KEY **, uint *, int);
 static uint blob_length_by_type(enum_field_types type);
@@ -2315,9 +2314,6 @@ int mysql_rm_table_no_locks(THD *thd, TABLE_LIST *tables, bool if_exists,
           . "DROP" was executed but a temporary table was affected (.i.e
           !error).
       */
-#ifndef DONT_LOG_DROP_OF_TEMPORARY_TABLES
-      table_creation_was_logged= 1;
-#endif
       if (!dont_log_query && table_creation_was_logged)
       {
         /*
@@ -4699,9 +4695,6 @@ int create_table_impl(THD *thd,
         We have to log this query, even if it failed later to ensure the
         drop is done.
       */
-#ifndef DONT_LOG_DROP_OF_TEMPORARY_TABLES
-      table_creation_was_logged= 1;
-#endif
       if (table_creation_was_logged)
       {
         thd->variables.option_bits|= OPTION_KEEP_LOG;
@@ -8491,6 +8484,10 @@ bool mysql_alter_table(THD *thd,char *new_db, char *new_name,
                 ER_THD(thd, ER_INSERT_INFO), 0L, 0L,
                 thd->get_stmt_da()->current_statement_warn_count());
     my_ok(thd, 0L, 0L, alter_ctx.tmp_name);
+
+    if (write_bin_log(thd, true, thd->query(), thd->query_length()))
+      DBUG_RETURN(true);
+
     DBUG_RETURN(false);
   }
 
@@ -9816,8 +9813,8 @@ err:
   @retval true  Engine not available/supported, error has been reported.
   @retval false Engine available/supported.
 */
-static bool check_engine(THD *thd, const char *db_name,
-                         const char *table_name, HA_CREATE_INFO *create_info)
+bool check_engine(THD *thd, const char *db_name,
+                  const char *table_name, HA_CREATE_INFO *create_info)
 {
   DBUG_ENTER("check_engine");
   handlerton **new_engine= &create_info->db_type;

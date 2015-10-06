@@ -2560,27 +2560,8 @@ my_decimal *Item_field::val_decimal_result(my_decimal *decimal_value)
 bool Item_field::val_bool_result()
 {
   if ((null_value= result_field->is_null()))
-    return FALSE;
-  switch (result_field->result_type()) {
-  case INT_RESULT:
-    return result_field->val_int() != 0;
-  case DECIMAL_RESULT:
-  {
-    my_decimal decimal_value;
-    my_decimal *val= result_field->val_decimal(&decimal_value);
-    if (val)
-      return !my_decimal_is_zero(val);
-    return 0;
-  }
-  case REAL_RESULT:
-  case STRING_RESULT:
-    return result_field->val_real() != 0.0;
-  case ROW_RESULT:
-  case TIME_RESULT:
-    DBUG_ASSERT(0);
-    return 0;                                   // Shut up compiler
-  }
-  return 0;
+    return false;
+  return result_field->val_bool();
 }
 
 
@@ -7204,25 +7185,8 @@ bool Item_ref::val_bool_result()
   if (result_field)
   {
     if ((null_value= result_field->is_null()))
-      return 0;
-    switch (result_field->result_type()) {
-    case INT_RESULT:
-      return result_field->val_int() != 0;
-    case DECIMAL_RESULT:
-    {
-      my_decimal decimal_value;
-      my_decimal *val= result_field->val_decimal(&decimal_value);
-      if (val)
-        return !my_decimal_is_zero(val);
-      return 0;
-    }
-    case REAL_RESULT:
-    case STRING_RESULT:
-      return result_field->val_real() != 0.0;
-    case ROW_RESULT:
-    case TIME_RESULT:
-      DBUG_ASSERT(0);
-    }
+      return false;
+    return result_field->val_bool();
   }
   return val_bool();
 }
@@ -8654,26 +8618,6 @@ int stored_field_cmp_to_item(THD *thd, Field *field, Item *item)
     if (item->null_value)
       return 0;
     String *field_result= field->val_str(&field_tmp);
-
-    enum_field_types field_type= field->type();
-
-    if (field_type == MYSQL_TYPE_DATE || field_type == MYSQL_TYPE_DATETIME ||
-        field_type == MYSQL_TYPE_TIMESTAMP)
-    {
-      enum_mysql_timestamp_type type= MYSQL_TIMESTAMP_ERROR;
-
-      if (field_type == MYSQL_TYPE_DATE)
-        type= MYSQL_TIMESTAMP_DATE;
-      else
-        type= MYSQL_TIMESTAMP_DATETIME;
-        
-      const char *field_name= field->field_name;
-      MYSQL_TIME field_time, item_time;
-      get_mysql_time_from_str(thd, field_result, type, field_name, &field_time);
-      get_mysql_time_from_str(thd, item_result, type, field_name,  &item_time);
-
-      return my_time_compare(&field_time, &item_time);
-    }
     return sortcmp(field_result, item_result, field->charset());
   }
   if (res_type == INT_RESULT)

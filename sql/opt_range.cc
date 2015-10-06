@@ -6965,7 +6965,6 @@ QUICK_SELECT_I *TRP_ROR_UNION::make_quick(PARAM *param,
       field       field in the predicate
       lt_value    constant that field should be smaller
       gt_value    constant that field should be greaterr
-      cmp_type    compare type for the field
 
   RETURN 
     #  Pointer to tree built tree
@@ -6974,21 +6973,19 @@ QUICK_SELECT_I *TRP_ROR_UNION::make_quick(PARAM *param,
 
 SEL_TREE *Item_bool_func::get_ne_mm_tree(RANGE_OPT_PARAM *param,
                                          Field *field,
-                                         Item *lt_value, Item *gt_value,
-                                         Item_result cmp_type)
+                                         Item *lt_value, Item *gt_value)
 {
   SEL_TREE *tree;
-  tree= get_mm_parts(param, field, Item_func::LT_FUNC, lt_value, cmp_type);
+  tree= get_mm_parts(param, field, Item_func::LT_FUNC, lt_value);
   if (tree)
     tree= tree_or(param, tree, get_mm_parts(param, field, Item_func::GT_FUNC,
-					    gt_value, cmp_type));
+					    gt_value));
   return tree;
 }
 
 
 SEL_TREE *Item_func_between::get_func_mm_tree(RANGE_OPT_PARAM *param,
-                                              Field *field, Item *value,
-                                              Item_result cmp_type)
+                                              Field *field, Item *value)
 {
   SEL_TREE *tree;
   DBUG_ENTER("Item_func_between::get_func_mm_tree");
@@ -6996,16 +6993,16 @@ SEL_TREE *Item_func_between::get_func_mm_tree(RANGE_OPT_PARAM *param,
   {
     if (negated)
     {
-      tree= get_ne_mm_tree(param, field, args[1], args[2], cmp_type);
+      tree= get_ne_mm_tree(param, field, args[1], args[2]);
     }
     else
     {
-      tree= get_mm_parts(param, field, Item_func::GE_FUNC, args[1], cmp_type);
+      tree= get_mm_parts(param, field, Item_func::GE_FUNC, args[1]);
       if (tree)
       {
         tree= tree_and(param, tree, get_mm_parts(param, field,
                                                  Item_func::LE_FUNC,
-                                                 args[2], cmp_type));
+                                                 args[2]));
       }
     }
   }
@@ -7017,18 +7014,17 @@ SEL_TREE *Item_func_between::get_func_mm_tree(RANGE_OPT_PARAM *param,
                                              Item_func::LT_FUNC):
                         (value == (Item*)1 ? Item_func::LE_FUNC :
                                              Item_func::GE_FUNC)),
-                       args[0], cmp_type);
+                       args[0]);
   }
   DBUG_RETURN(tree);
 }
 
 
 SEL_TREE *Item_func_in::get_func_mm_tree(RANGE_OPT_PARAM *param,
-                                         Field *field, Item *value,
-                                         Item_result cmp_type)
+                                         Field *field, Item *value)
 {
   SEL_TREE *tree= 0;
-  DBUG_ENTER("Iten_func_in::get_func_mm_tree");
+  DBUG_ENTER("Item_func_in::get_func_mm_tree");
   /*
     Array for IN() is constructed when all values have the same result
     type. Tree won't be built for values with different result types,
@@ -7090,8 +7086,7 @@ SEL_TREE *Item_func_in::get_func_mm_tree(RANGE_OPT_PARAM *param,
       do
       {
         array->value_to_item(i, value_item);
-        tree= get_mm_parts(param, field, Item_func::LT_FUNC,
-                           value_item, cmp_type);
+        tree= get_mm_parts(param, field, Item_func::LT_FUNC, value_item);
         if (!tree)
           break;
         i++;
@@ -7109,8 +7104,7 @@ SEL_TREE *Item_func_in::get_func_mm_tree(RANGE_OPT_PARAM *param,
         {
           /* Get a SEL_TREE for "-inf < X < c_i" interval */
           array->value_to_item(i, value_item);
-          tree2= get_mm_parts(param, field, Item_func::LT_FUNC,
-                              value_item, cmp_type);
+          tree2= get_mm_parts(param, field, Item_func::LT_FUNC, value_item);
           if (!tree2)
           {
             tree= NULL;
@@ -7171,28 +7165,27 @@ SEL_TREE *Item_func_in::get_func_mm_tree(RANGE_OPT_PARAM *param,
           Get the SEL_TREE for the last "c_last < X < +inf" interval
           (value_item cotains c_last already)
         */
-        tree2= get_mm_parts(param, field, Item_func::GT_FUNC,
-                            value_item, cmp_type);
+        tree2= get_mm_parts(param, field, Item_func::GT_FUNC, value_item);
         tree= tree_or(param, tree, tree2);
       }
     }
     else
     {
-      tree= get_ne_mm_tree(param, field, args[1], args[1], cmp_type);
+      tree= get_ne_mm_tree(param, field, args[1], args[1]);
       if (tree)
       {
         Item **arg, **end;
         for (arg= args + 2, end= arg + arg_count - 2; arg < end ; arg++)
         {
           tree=  tree_and(param, tree, get_ne_mm_tree(param, field,
-                                                      *arg, *arg, cmp_type));
+                                                      *arg, *arg));
         }
       }
     }
   }
   else
   {
-    tree= get_mm_parts(param, field, Item_func::EQ_FUNC, args[1], cmp_type);
+    tree= get_mm_parts(param, field, Item_func::EQ_FUNC, args[1]);
     if (tree)
     {
       Item **arg, **end;
@@ -7200,8 +7193,7 @@ SEL_TREE *Item_func_in::get_func_mm_tree(RANGE_OPT_PARAM *param,
            arg < end ; arg++)
       {
         tree= tree_or(param, tree, get_mm_parts(param, field,
-                                                Item_func::EQ_FUNC,
-                                                *arg, cmp_type));
+                                                Item_func::EQ_FUNC, *arg));
       }
     }
   }
@@ -7304,9 +7296,8 @@ SEL_TREE *Item_bool_func::get_full_func_mm_tree(RANGE_OPT_PARAM *param,
       ref_tables|= arg->used_tables();
   }
   Field *field= field_item->field;
-  Item_result cmp_type= field->cmp_type();
   if (!((ref_tables | field->table->map) & param_comp))
-    ftree= get_func_mm_tree(param, field, value, cmp_type);
+    ftree= get_func_mm_tree(param, field, value);
   Item_equal *item_equal= field_item->item_equal;
   if (item_equal)
   {
@@ -7318,7 +7309,7 @@ SEL_TREE *Item_bool_func::get_full_func_mm_tree(RANGE_OPT_PARAM *param,
         continue;
       if (!((ref_tables | f->table->map) & param_comp))
       {
-        tree= get_func_mm_tree(param, f, value, cmp_type);
+        tree= get_func_mm_tree(param, f, value);
         ftree= !ftree ? tree : tree_and(param, ftree, tree);
       }
     }
@@ -7432,10 +7423,10 @@ SEL_TREE *Item_cond::get_mm_tree(RANGE_OPT_PARAM *param, Item **cond_ptr)
 }
 
 
-static SEL_TREE *get_mm_tree_for_const(RANGE_OPT_PARAM *param, Item *cond)
+SEL_TREE *Item::get_mm_tree_for_const(RANGE_OPT_PARAM *param)
 {
   DBUG_ENTER("get_mm_tree_for_const");
-  if (cond->is_expensive())
+  if (is_expensive())
     DBUG_RETURN(0);
   /*
     During the cond->val_int() evaluation we can come across a subselect
@@ -7446,8 +7437,8 @@ static SEL_TREE *get_mm_tree_for_const(RANGE_OPT_PARAM *param, Item *cond)
   MEM_ROOT *tmp_root= param->mem_root;
   param->thd->mem_root= param->old_root;
   SEL_TREE *tree;
-  tree= cond->val_int() ? new(tmp_root) SEL_TREE(SEL_TREE::ALWAYS) :
-                          new(tmp_root) SEL_TREE(SEL_TREE::IMPOSSIBLE);
+  tree= val_int() ? new(tmp_root) SEL_TREE(SEL_TREE::ALWAYS) :
+                    new(tmp_root) SEL_TREE(SEL_TREE::IMPOSSIBLE);
   param->thd->mem_root= tmp_root;
   DBUG_RETURN(tree);
 }
@@ -7457,7 +7448,7 @@ SEL_TREE *Item::get_mm_tree(RANGE_OPT_PARAM *param, Item **cond_ptr)
 {
   DBUG_ENTER("Item::get_mm_tree");
   if (const_item())
-    DBUG_RETURN(get_mm_tree_for_const(param, this));
+    DBUG_RETURN(get_mm_tree_for_const(param));
 
   /*
     Here we have a not-constant non-function Item.
@@ -7483,7 +7474,7 @@ Item_func_between::get_mm_tree(RANGE_OPT_PARAM *param, Item **cond_ptr)
 {
   DBUG_ENTER("Item_func_between::get_mm_tree");
   if (const_item())
-    DBUG_RETURN(get_mm_tree_for_const(param, this));
+    DBUG_RETURN(get_mm_tree_for_const(param));
 
   SEL_TREE *tree= 0;
   SEL_TREE *ftree= 0;
@@ -7530,7 +7521,7 @@ SEL_TREE *Item_func_in::get_mm_tree(RANGE_OPT_PARAM *param, Item **cond_ptr)
 {
   DBUG_ENTER("Item_func_in::get_mm_tree");
   if (const_item())
-    DBUG_RETURN(get_mm_tree_for_const(param, this));
+    DBUG_RETURN(get_mm_tree_for_const(param));
 
   if (key_item()->real_item()->type() != Item::FIELD_ITEM)
     DBUG_RETURN(0);
@@ -7544,7 +7535,7 @@ SEL_TREE *Item_equal::get_mm_tree(RANGE_OPT_PARAM *param, Item **cond_ptr)
 {
   DBUG_ENTER("Item_equal::get_mm_tree");
   if (const_item())
-    DBUG_RETURN(get_mm_tree_for_const(param, this));
+    DBUG_RETURN(get_mm_tree_for_const(param));
 
   SEL_TREE *tree= 0;
   SEL_TREE *ftree= 0;
@@ -7562,8 +7553,7 @@ SEL_TREE *Item_equal::get_mm_tree(RANGE_OPT_PARAM *param, Item **cond_ptr)
     Field *field= it.get_curr_field();
     if (!((ref_tables | field->table->map) & param_comp))
     {
-      tree= get_mm_parts(param, field, Item_func::EQ_FUNC,
-                         value, field->cmp_type());
+      tree= get_mm_parts(param, field, Item_func::EQ_FUNC, value);
       ftree= !ftree ? tree : tree_and(param, ftree, tree);
     }
   }
@@ -7572,81 +7562,9 @@ SEL_TREE *Item_equal::get_mm_tree(RANGE_OPT_PARAM *param, Item **cond_ptr)
 }
 
 
-SEL_TREE *Item_func::get_mm_tree(RANGE_OPT_PARAM *param, Item **cond_ptr)
-{
-  DBUG_ENTER("Item_func::get_mm_tree");
-  DBUG_RETURN(const_item() ? get_mm_tree_for_const(param, this) : NULL);
-}
-
-
-SEL_TREE *Item_func_null_predicate::get_mm_tree(RANGE_OPT_PARAM *param,
-                                                Item **cond_ptr)
-{
-  DBUG_ENTER("Item_func_null_predicate::get_mm_tree");
-  if (const_item())
-    DBUG_RETURN(get_mm_tree_for_const(param, this));
-  if (args[0]->real_item()->type() == Item::FIELD_ITEM)
-  {
-    Item_field *field_item= (Item_field*) args[0]->real_item();
-    if (!field_item->const_item())
-      DBUG_RETURN(get_full_func_mm_tree(param, field_item, NULL));
-  }
-  DBUG_RETURN(NULL);
-}
-
-
-SEL_TREE *Item_bool_func2::get_mm_tree(RANGE_OPT_PARAM *param, Item **cond_ptr)
-{
-  DBUG_ENTER("Item_bool_func2::get_mm_tree");
-  if (const_item())
-    DBUG_RETURN(get_mm_tree_for_const(param, this));
-
-  SEL_TREE *ftree= 0;
-  DBUG_ASSERT(arg_count == 2);
-  if (arguments()[0]->real_item()->type() == Item::FIELD_ITEM)
-  {
-    Item_field *field_item= (Item_field*) (arguments()[0]->real_item());
-    Item *value= arguments()[1];
-    if (value && value->is_expensive())
-      DBUG_RETURN(0);
-    if (!arguments()[0]->real_item()->const_item())
-      ftree= get_full_func_mm_tree(param, field_item, value);
-  }
-  /*
-    Even if get_full_func_mm_tree() was executed above and did not
-    return a range predicate it may still be possible to create one
-    by reversing the order of the operands. Note that this only
-    applies to predicates where both operands are fields. Example: A
-    query of the form
-
-       WHERE t1.a OP t2.b
-
-    In this case, arguments()[0] == t1.a and arguments()[1] == t2.b.
-    When creating range predicates for t2, get_full_func_mm_tree()
-    above will return NULL because 'field' belongs to t1 and only
-    predicates that applies to t2 are of interest. In this case a
-    call to get_full_func_mm_tree() with reversed operands (see
-    below) may succeed.
-  */
-  if (!ftree && have_rev_func() &&
-      arguments()[1]->real_item()->type() == Item::FIELD_ITEM)
-  {
-    Item_field *field_item= (Item_field*) (arguments()[1]->real_item());
-    Item *value= arguments()[0];
-    if (value && value->is_expensive())
-      DBUG_RETURN(0);
-    if (!arguments()[1]->real_item()->const_item())
-      ftree= get_full_func_mm_tree(param, field_item, value);
-  }
-
-  DBUG_RETURN(ftree);
-}
-
-
 SEL_TREE *
 Item_bool_func::get_mm_parts(RANGE_OPT_PARAM *param, Field *field,
-	                     Item_func::Functype type,
-	                     Item *value, Item_result cmp_type)
+	                     Item_func::Functype type, Item *value)
 {
   DBUG_ENTER("get_mm_parts");
   if (field->table != param->table)
@@ -7849,28 +7767,6 @@ Item_bool_func::get_mm_leaf(RANGE_OPT_PARAM *param,
   if (key_part->image_type != Field::itRAW)
     DBUG_RETURN(0);   // e.g. SPATIAL index
 
-  /*
-    1. Usually we can't use an index if the column collation
-       differ from the operation collation.
-
-    2. However, we can reuse a case insensitive index for
-       the binary searches:
-
-       WHERE latin1_swedish_ci_column = 'a' COLLATE lati1_bin;
-
-       WHERE latin1_swedish_ci_colimn = BINARY 'a '
-
-  */
-  if (field->result_type() == STRING_RESULT &&
-      field->match_collation_to_optimize_range() &&
-      value->result_type() == STRING_RESULT &&
-      field->charset() != compare_collation() &&
-      !((type == EQUAL_FUNC || type == EQ_FUNC) &&
-        compare_collation()->state & MY_CS_BINSORT))
-    goto end;
-  if (value->cmp_type() == TIME_RESULT && field->cmp_type() != TIME_RESULT)
-    goto end;
-
   if (param->using_real_indexes &&
       !field->optimize_range(param->real_keynr[key_part->key],
                              key_part->part) &&
@@ -7878,12 +7774,10 @@ Item_bool_func::get_mm_leaf(RANGE_OPT_PARAM *param,
       type != EQUAL_FUNC)
     goto end;                                   // Can't optimize this
 
-  /*
-    We can't always use indexes when comparing a string index to a number
-    cmp_type() is checked to allow compare of dates to numbers
-  */
-  if (field->cmp_type() == STRING_RESULT && value->cmp_type() != STRING_RESULT)
+  if (!field->can_optimize_range(this, value,
+                                 type == EQUAL_FUNC || type == EQ_FUNC))
     goto end;
+
   err= value->save_in_field_no_warnings(field, 1);
   if (err == 2 && field->cmp_type() == STRING_RESULT)
   {

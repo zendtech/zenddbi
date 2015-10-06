@@ -130,7 +130,11 @@ public:
   COND *build_equal_items(THD *thd, COND_EQUAL *inherited,
                           bool link_item_fields,
                           COND_EQUAL **cond_equal_ref);
-  SEL_TREE *get_mm_tree(RANGE_OPT_PARAM *param, Item **cond_ptr);
+  SEL_TREE *get_mm_tree(RANGE_OPT_PARAM *param, Item **cond_ptr)
+  {
+    DBUG_ENTER("Item_func::get_mm_tree");
+    DBUG_RETURN(const_item() ? get_mm_tree_for_const(param) : NULL);
+  }
   bool eq(const Item *item, bool binary_cmp) const;
   virtual Item *key_item() const { return args[0]; }
   virtual bool const_item() const { return const_item_cache; }
@@ -987,28 +991,39 @@ public:
 };
 
 
-class Item_func_min_max :public Item_func
+/**
+  Item_func_min_max does not derive from Item_func_hybrid_field_type
+  because the way how its methods val_xxx() and get_date() work depend
+  not only by its arguments, but also on the context in which
+  LEAST() and GREATEST() appear.
+  For example, using Item_func_min_max in a CAST like this:
+    CAST(LEAST('11','2') AS SIGNED)
+  forces Item_func_min_max to compare the arguments as numbers rather
+  than strings.
+  Perhaps this should be changed eventually (see MDEV-5893).
+*/
+class Item_func_min_max :public Item_func,
+                         public Type_handler_hybrid_field_type
 {
-  Item_result cmp_type;
   String tmp_value;
   int cmp_sign;
-  /* An item used for issuing warnings while string to DATETIME conversion. */
-  Item *compare_as_dates;
   THD *thd;
-protected:
-  enum_field_types cached_field_type;
 public:
   Item_func_min_max(THD *thd, List<Item> &list, int cmp_sign_arg):
-    Item_func(thd, list), cmp_type(INT_RESULT), cmp_sign(cmp_sign_arg),
-    compare_as_dates(0) {}
+    Item_func(thd, list), cmp_sign(cmp_sign_arg)
+  {}
   double val_real();
   longlong val_int();
   String *val_str(String *);
   my_decimal *val_decimal(my_decimal *);
   bool get_date(MYSQL_TIME *res, ulonglong fuzzy_date);
   void fix_length_and_dec();
-  enum Item_result result_type () const { return cmp_type; }
-  enum_field_types field_type() const { return cached_field_type; }
+  enum Item_result cmp_type() const
+  { return Type_handler_hybrid_field_type::cmp_type(); }
+  enum Item_result result_type() const
+  { return Type_handler_hybrid_field_type::result_type(); }
+  enum_field_types field_type() const
+  { return Type_handler_hybrid_field_type::field_type(); }
 };
 
 class Item_func_min :public Item_func_min_max

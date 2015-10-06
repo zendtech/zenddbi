@@ -2911,16 +2911,23 @@ loop:
 				ib_mutex_t* pmutex = buf_page_get_mutex(bpage);
 				mutex_enter(&buf_pool->LRU_list_mutex);
 				mutex_enter(pmutex);
-				buf_block_t* block = buf_page_get_block(bpage);
+
+				ut_ad(buf_pool->n_pend_reads > 0);
+				os_atomic_decrement_ulint(&buf_pool->n_pend_reads, 1);
 				buf_page_set_io_fix(bpage, BUF_IO_NONE);
-				buf_block_set_state(block, BUF_BLOCK_NOT_USED);
-				buf_block_set_state(block, BUF_BLOCK_READY_FOR_USE);
-				mutex_exit(&buf_pool->LRU_list_mutex);
+
+				if (!buf_LRU_free_page(bpage, true)) {
+					mutex_exit(&buf_pool->LRU_list_mutex);
+				}
+
 				mutex_exit(pmutex);
+				rw_lock_x_unlock_gen(&((buf_block_t*) bpage)->lock,
+					     BUF_IO_READ);
 
 				if (err) {
 					*err = DB_DECRYPTION_FAILED;
 				}
+
 				return (NULL);
 			}
 
@@ -2957,16 +2964,23 @@ loop:
 				ib_mutex_t* pmutex = buf_page_get_mutex(bpage);
 				mutex_enter(&buf_pool->LRU_list_mutex);
 				mutex_enter(pmutex);
-				buf_block_t* block = buf_page_get_block(bpage);
+
+				ut_ad(buf_pool->n_pend_reads > 0);
+				os_atomic_decrement_ulint(&buf_pool->n_pend_reads, 1);
 				buf_page_set_io_fix(bpage, BUF_IO_NONE);
-				buf_block_set_state(block, BUF_BLOCK_NOT_USED);
-				buf_block_set_state(block, BUF_BLOCK_READY_FOR_USE);
-				mutex_exit(&buf_pool->LRU_list_mutex);
+
+				if (!buf_LRU_free_page(bpage, true)) {
+					mutex_exit(&buf_pool->LRU_list_mutex);
+				}
+
 				mutex_exit(pmutex);
+				rw_lock_x_unlock_gen(&((buf_block_t*) bpage)->lock,
+					     BUF_IO_READ);
 
 				if (err) {
 					*err = DB_DECRYPTION_FAILED;
 				}
+
 				return (NULL);
 			}
 		}
@@ -6192,8 +6206,7 @@ buf_page_encrypt_before_write(
 					      zip_size,
 					      dst_frame);
 
-		unsigned key_version =
-			mach_read_from_4(dst_frame + FIL_PAGE_FILE_FLUSH_LSN_OR_KEY_VERSION);
+		ulint key_version = mach_read_from_4(dst_frame + FIL_PAGE_FILE_FLUSH_LSN_OR_KEY_VERSION);
 		ut_ad(key_version == 0 || key_version >= bpage->key_version);
 		bpage->key_version = key_version;
 		bpage->real_size = page_size;

@@ -8041,7 +8041,7 @@ void make_leaves_list(THD *thd, List<TABLE_LIST> &list, TABLE_LIST *tables,
     from_clause   Top-level list of table references in the FROM clause
     tables	  Table list (select_lex->table_list)
     leaves        List of join table leaves list (select_lex->leaf_tables)
-    refresh       It is onle refresh for subquery
+    refresh       It is only refresh for subquery
     select_insert It is SELECT ... INSERT command
     full_table_list a parameter to pass to the make_leaves_list function
 
@@ -8225,7 +8225,6 @@ bool setup_tables_and_check_access(THD *thd,
                                    ulong want_access,
                                    bool full_table_list)
 {
-  bool first_table= true;
   DBUG_ENTER("setup_tables_and_check_access");
 
   if (setup_tables(thd, context, from_clause, tables,
@@ -8234,16 +8233,16 @@ bool setup_tables_and_check_access(THD *thd,
 
   List_iterator<TABLE_LIST> ti(leaves);
   TABLE_LIST *table_list;
-  while((table_list= ti++))
+  ulong access= want_access_first;
+  while ((table_list= ti++))
   {
     if (table_list->belong_to_view && !table_list->view && 
-        check_single_table_access(thd, first_table ? want_access_first :
-                                  want_access, table_list, FALSE))
+        check_single_table_access(thd, access, table_list, FALSE))
     {
       tables->hide_view_error(thd);
       DBUG_RETURN(TRUE);
     }
-    first_table= 0;
+    access= want_access;
   }
   DBUG_RETURN(FALSE);
 }

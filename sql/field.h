@@ -738,6 +738,7 @@ public:
   { return store(ls->str, ls->length, cs); }
   virtual double val_real(void)=0;
   virtual longlong val_int(void)=0;
+  virtual bool val_bool(void)= 0;
   virtual my_decimal *val_decimal(my_decimal *);
   inline String *val_str(String *str) { return val_str(str, str); }
   /*
@@ -1198,16 +1199,6 @@ public:
   { return binary() ? &my_charset_bin : charset(); }
   virtual CHARSET_INFO *sort_charset(void) const { return charset(); }
   virtual bool has_charset(void) const { return FALSE; }
-  /*
-    match_collation_to_optimize_range() is to distinguish in
-    range optimizer (see opt_range.cc) between real string types:
-      CHAR, VARCHAR, TEXT
-    and the other string-alike types with result_type() == STRING_RESULT:
-      DATE, TIME, DATETIME, TIMESTAMP
-    We need it to decide whether to test if collation of the operation
-    matches collation of the field (needed only for real string types).
-  */
-  virtual bool match_collation_to_optimize_range() const { return false; }
   virtual void set_charset(CHARSET_INFO *charset_arg) { }
   virtual enum Derivation derivation(void) const
   { return DERIVATION_IMPLICIT; }
@@ -1358,6 +1349,15 @@ public:
   }
   virtual bool can_optimize_group_min_max(const Item_bool_func *cond,
                                           const Item *const_item) const;
+  /**
+    Test if Field can use range optimizer for a standard comparison operation:
+      <=, <, =, <=>, >, >=
+    Note, this method does not cover spatial operations.
+  */
+  virtual bool can_optimize_range(const Item_bool_func *cond,
+                                  const Item *item,
+                                  bool is_eq_func) const;
+
   bool can_optimize_outer_join_table_elimination(const Item_bool_func *cond,
                                                  const Item *item) const
   {
@@ -1491,6 +1491,7 @@ public:
   bool eq_def(Field *field);
   int store_decimal(const my_decimal *);
   my_decimal *val_decimal(my_decimal *);
+  bool val_bool() { return val_int() != 0; }
   uint is_equal(Create_field *new_field);
   uint row_pack_length() const { return pack_length(); }
   uint32 pack_length_from_metadata(uint field_metadata) {
@@ -1537,6 +1538,7 @@ public:
   uint32 max_display_length() { return field_length; }
   friend class Create_field;
   my_decimal *val_decimal(my_decimal *);
+  bool val_bool() { return val_real() != 0e0; }
   virtual bool str_needs_quotes() { return TRUE; }
   uint is_equal(Create_field *new_field);
   bool eq_cmp_as_binary() { return MY_TEST(flags & BINARY_FLAG); }
@@ -1580,13 +1582,15 @@ public:
 
   int store_decimal(const my_decimal *d);
   uint32 max_data_length() const;
-  bool match_collation_to_optimize_range() const { return true; }
   bool can_optimize_keypart_ref(const Item_bool_func *cond,
                                 const Item *item) const;
   bool can_optimize_hash_join(const Item_bool_func *cond,
                               const Item *item) const;
   bool can_optimize_group_min_max(const Item_bool_func *cond,
                                   const Item *const_item) const;
+  bool can_optimize_range(const Item_bool_func *cond,
+                          const Item *item,
+                          bool is_eq_func) const;
 };
 
 /* base class for float and double and decimal (old one) */
@@ -1609,6 +1613,7 @@ public:
   int  store_time_dec(MYSQL_TIME *ltime, uint dec);
   bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate);
   my_decimal *val_decimal(my_decimal *);
+  bool val_bool() { return val_real() != 0e0; }
   uint32 max_display_length() { return field_length; }
   uint size_of() const { return sizeof(*this); }
   Item *get_equal_const_item(THD *thd, const Context &ctx, Item *const_item);
@@ -1684,6 +1689,12 @@ public:
   my_decimal *val_decimal(my_decimal *);
   String *val_str(String*, String *);
   bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate);
+  bool val_bool()
+  {
+    my_decimal decimal_value;
+    my_decimal *val= val_decimal(&decimal_value);
+    return val ? !my_decimal_is_zero(val) : 0;
+  }
   int cmp(const uchar *, const uchar *);
   void sort_string(uchar *buff, uint length);
   bool zero_pack() const { return 0; }
@@ -2009,6 +2020,7 @@ public:
   int reset(void)	  { return 0; }
   double val_real(void)		{ return 0.0;}
   longlong val_int(void)	{ return 0;}
+  bool val_bool(void) { return false; }
   my_decimal *val_decimal(my_decimal *) { return 0; }
   String *val_str(String *value,String *value2)
   { value2->length(0); return value2;}
@@ -2054,6 +2066,7 @@ public:
   CHARSET_INFO *sort_charset(void) const { return &my_charset_bin; }
   bool binary() const { return true; }
   enum Item_result cmp_type () const { return TIME_RESULT; }
+  bool val_bool() { return val_real() != 0e0; }
   uint is_equal(Create_field *new_field);
   bool eq_def(Field *field)
   {
@@ -2070,6 +2083,12 @@ public:
                                 const Item *item) const;
   bool can_optimize_group_min_max(const Item_bool_func *cond,
                                   const Item *const_item) const;
+  bool can_optimize_range(const Item_bool_func *cond,
+                                  const Item *item,
+                                  bool is_eq_func) const
+  {
+    return true;
+  }
 };
 
 
@@ -3089,7 +3108,9 @@ public:
   { geom_type= geom_type_arg; srid= 0; }
   enum ha_base_keytype key_type() const { return HA_KEYTYPE_VARBINARY2; }
   enum_field_types type() const { return MYSQL_TYPE_GEOMETRY; }
-  bool match_collation_to_optimize_range() const { return false; }
+  bool can_optimize_range(const Item_bool_func *cond,
+                                  const Item *item,
+                                  bool is_eq_func) const;
   void sql_type(String &str) const;
   int  store(const char *to, uint length, CHARSET_INFO *charset);
   int  store(double nr);
@@ -3267,6 +3288,7 @@ public:
   String *val_str(String*, String *);
   virtual bool str_needs_quotes() { return TRUE; }
   my_decimal *val_decimal(my_decimal *);
+  bool val_bool() { return val_int() != 0; }
   int cmp(const uchar *a, const uchar *b)
   {
     DBUG_ASSERT(ptr == a || ptr == b);
