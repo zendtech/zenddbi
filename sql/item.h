@@ -761,7 +761,10 @@ public:
   /* ... while cmp_type() specifies how it should be compared */
   Item_result cmp_type() const;
   virtual Item_result cast_to_int_type() const { return cmp_type(); }
-  virtual enum_field_types string_field_type() const;
+  enum_field_types string_field_type() const
+  {
+    return Type_handler::string_type_handler(max_length)->field_type();
+  }
   enum_field_types field_type() const;
   virtual enum Type type() const =0;
   /*
@@ -1020,6 +1023,8 @@ public:
   virtual Field *get_tmp_table_field() { return 0; }
   /* This is also used to create fields in CREATE ... SELECT: */
   virtual Field *tmp_table_field(TABLE *t_arg) { return 0; }
+  virtual Field *create_field_for_create_select(THD *thd, TABLE *table);
+  virtual Field *create_field_for_schema(THD *thd, TABLE *table);
   virtual const char *full_name() const { return name ? name : "???"; }
   const char *field_name_or_null()
   { return real_item()->type() == Item::FIELD_ITEM ? name : NULL; }
@@ -1623,7 +1628,9 @@ public:
   // used in row subselects to get value of elements
   virtual void bring_value() {}
 
-  Field *tmp_table_field_from_field_type(TABLE *table, bool fixed_length);
+  Field *tmp_table_field_from_field_type(TABLE *table,
+                                         bool fixed_length,
+                                         bool set_blob_packlength);
   virtual Item_field *field_for_view_update() { return 0; }
 
   virtual Item *neg_transformer(THD *thd) { return NULL; }
@@ -2480,6 +2487,47 @@ public:
   friend class st_select_lex_unit;
 };
 
+
+/*
+  @brief 
+    Item_temptable_field is the same as Item_field, except that print() 
+    continues to work even if the table has been dropped.
+
+  @detail
+
+    We need this item for "ANALYZE statement" feature. Query execution has 
+    these steps:
+
+      1. Run the query.
+      2. Cleanup starts. Temporary tables are destroyed
+      3. print "ANALYZE statement" output, if needed
+      4. Call close_thread_table() for regular tables.
+
+    Step #4 is done after step #3, so "ANALYZE stmt" has no problem printing
+    Item_field objects that refer to regular tables.
+
+    However, Step #3 is done after Step #2. Attempt to print Item_field objects
+    that refer to temporary tables will cause access to freed memory. 
+    
+    To resolve this, we use Item_temptable_field to refer to items in temporary
+    (work) tables.
+*/
+
+class Item_temptable_field :public Item_field
+{
+public:
+  Item_temptable_field(THD *thd, Name_resolution_context *context_arg, Field *field)
+   : Item_field(thd, context_arg, field) {}
+
+  Item_temptable_field(THD *thd, Field *field)
+   : Item_field(thd, field) {}
+
+  Item_temptable_field(THD *thd, Item_field *item) : Item_field(thd, item) {};
+
+  virtual void print(String *str, enum_query_type query_type);
+};
+
+
 class Item_null :public Item_basic_constant
 {
 public:
@@ -3146,6 +3194,8 @@ public:
   { max_length= length; }
   enum Type type() const { return TYPE_HOLDER; }
   enum_field_types field_type() const { return MYSQL_TYPE_BLOB; }
+  Field *create_field_for_schema(THD *thd, TABLE *table)
+  { return tmp_table_field_from_field_type(table, false, true); }
 };
 
 
@@ -3340,7 +3390,7 @@ public:
   my_decimal *val_decimal(my_decimal *decimal_value)
   { return  val_decimal_from_date(decimal_value); }
   Field *tmp_table_field(TABLE *table)
-  { return tmp_table_field_from_field_type(table, 0); }
+  { return tmp_table_field_from_field_type(table, false, false); }
   int save_in_field(Field *field, bool no_conversions)
   { return save_date_in_field(field); }
 };

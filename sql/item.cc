@@ -2636,7 +2636,7 @@ void Item_field::fix_after_pullout(st_select_lex *new_parent, Item **ref)
 
 Item *Item_field::get_tmp_table_item(THD *thd)
 {
-  Item_field *new_item= new (thd->mem_root) Item_field(thd, this);
+  Item_field *new_item= new (thd->mem_root) Item_temptable_field(thd, this);
   if (new_item)
     new_item->field= new_item->result_field;
   return new_item;
@@ -5362,17 +5362,6 @@ void Item::make_field(Send_field *tmp_field)
 }
 
 
-enum_field_types Item::string_field_type() const
-{
-  enum_field_types f_type= MYSQL_TYPE_VAR_STRING;
-  if (max_length >= 16777216)
-    f_type= MYSQL_TYPE_LONG_BLOB;
-  else if (max_length >= 65536)
-    f_type= MYSQL_TYPE_MEDIUM_BLOB;
-  return f_type;
-}
-
-
 void Item_empty_string::make_field(Send_field *tmp_field)
 {
   init_make_field(tmp_field, string_field_type());
@@ -5576,7 +5565,9 @@ Field *Item::make_string_field(TABLE *table)
     \#    Created field
 */
 
-Field *Item::tmp_table_field_from_field_type(TABLE *table, bool fixed_length)
+Field *Item::tmp_table_field_from_field_type(TABLE *table,
+                                             bool fixed_length,
+                                             bool set_blob_packlength)
 {
   /*
     The field functions defines a field to be not null if null_ptr is not 0
@@ -5674,12 +5665,9 @@ Field *Item::tmp_table_field_from_field_type(TABLE *table, bool fixed_length)
   case MYSQL_TYPE_MEDIUM_BLOB:
   case MYSQL_TYPE_LONG_BLOB:
   case MYSQL_TYPE_BLOB:
-    if (this->type() == Item::TYPE_HOLDER)
-      field= new (mem_root)
-        Field_blob(max_length, maybe_null, name, collation.collation, 1);
-    else
-      field= new (mem_root)
-        Field_blob(max_length, maybe_null, name, collation.collation);
+    field= new (mem_root)
+           Field_blob(max_length, maybe_null, name,
+                      collation.collation, set_blob_packlength);
     break;					// Blob handled outside of case
 #ifdef HAVE_SPATIAL
   case MYSQL_TYPE_GEOMETRY:
@@ -6607,6 +6595,16 @@ void Item_field::print(String *str, enum_query_type query_type)
     print_value(str);
     return;
   }
+  Item_ident::print(str, query_type);
+}
+
+
+void Item_temptable_field::print(String *str, enum_query_type query_type)
+{
+  /*
+    Item_ident doesn't have references to the underlying Field/TABLE objects,
+    so it's ok to use the following:
+  */
   Item_ident::print(str, query_type);
 }
 
@@ -7800,7 +7798,7 @@ int Item_cache_wrapper::save_in_field(Field *to, bool no_conversions)
 Item* Item_cache_wrapper::get_tmp_table_item(THD *thd)
 {
   if (!orig_item->with_sum_func && !orig_item->const_item())
-    return new (thd->mem_root) Item_field(thd, result_field);
+    return new (thd->mem_root) Item_temptable_field(thd, result_field);
   return copy_or_same(thd);
 }
 
@@ -9552,7 +9550,7 @@ Field *Item_type_holder::make_field_by_type(TABLE *table)
   default:
     break;
   }
-  return tmp_table_field_from_field_type(table, 0);
+  return tmp_table_field_from_field_type(table, false, true);
 }
 
 
