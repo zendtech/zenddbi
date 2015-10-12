@@ -31,7 +31,7 @@ extern "C"				/* Bug in BSDI include file */
 #endif
 
 
-class Item_func :public Item_func_or_sum, public Used_tables_and_const_cache
+class Item_func :public Item_func_or_sum
 {
   void sync_with_sum_func_and_with_field(List<Item> &list);
 protected:
@@ -106,8 +106,8 @@ public:
     set_arguments(thd, list);
   }
   // Constructor used for Item_cond_and/or (see Item comment)
-  Item_func(THD *thd, Item_func *item)
-   :Item_func_or_sum(thd, item), Used_tables_and_const_cache(item),
+  Item_func(THD *thd, Item_func *item):
+    Item_func_or_sum(thd, item),
     allowed_arg_cols(item->allowed_arg_cols),
     not_null_tables_cache(item->not_null_tables_cache)
   {
@@ -120,7 +120,6 @@ public:
   }
   void fix_after_pullout(st_select_lex *new_parent, Item **ref);
   void quick_fix_field();
-  table_map used_tables() const;
   table_map not_null_tables() const;
   void update_used_tables()
   {
@@ -137,7 +136,6 @@ public:
   }
   bool eq(const Item *item, bool binary_cmp) const;
   virtual Item *key_item() const { return args[0]; }
-  virtual bool const_item() const { return const_item_cache; }
   void set_arguments(THD *thd, List<Item> &list)
   {
     allowed_arg_cols= 1;
@@ -339,17 +337,17 @@ public:
 
   void no_rows_in_result()
   {
-    bool_func_call_args info;
-    info.original_func_item= this;
-    info.bool_function= &Item::no_rows_in_result;
-    walk(&Item::call_bool_func_processor, FALSE, (uchar*) &info);
+    for (uint i= 0; i < arg_count; i++)
+    {
+      args[i]->no_rows_in_result();
+    }
   }
   void restore_to_before_no_rows_in_result()
   {
-    bool_func_call_args info;
-    info.original_func_item= this;
-    info.bool_function= &Item::restore_to_before_no_rows_in_result;
-    walk(&Item::call_bool_func_processor, FALSE, (uchar*) &info);
+    for (uint i= 0; i < arg_count; i++)
+    {
+      args[i]->no_rows_in_result();
+    }
   }
   void convert_const_compared_to_int_field(THD *thd);
   /**
@@ -426,6 +424,32 @@ public:
 */
 class Item_func_hybrid_field_type: public Item_hybrid_func
 {
+  /*
+    Helper methods to make sure that the result of
+    decimal_op(), str_op() and date_op() is properly synched with null_value.
+  */
+  bool date_op_with_null_check(MYSQL_TIME *ltime)
+  {
+     bool rc= date_op(ltime,
+                      field_type() == MYSQL_TYPE_TIME ? TIME_TIME_ONLY : 0);
+     DBUG_ASSERT(!rc ^ null_value);
+     return rc;
+  }
+  String *str_op_with_null_check(String *str)
+  {
+    String *res= str_op(str);
+    DBUG_ASSERT((res != NULL) ^ null_value);
+    return res;
+  }
+  my_decimal *decimal_op_with_null_check(my_decimal *decimal_buffer)
+  {
+    my_decimal *res= decimal_op(decimal_buffer);
+    DBUG_ASSERT((res != NULL) ^ null_value);
+    return res;
+  }
+protected:
+  Item_result cached_result_type;
+
 public:
   Item_func_hybrid_field_type(THD *thd):
     Item_hybrid_func(thd)
