@@ -110,6 +110,8 @@
 #include <poll.h>
 #endif
 
+#include <my_systemd.h>
+
 #define mysqld_charset &my_charset_latin1
 
 /* We have HAVE_valgrind below as this speeds up the shutdown of MySQL */
@@ -1997,6 +1999,7 @@ void unireg_end(void)
 {
   clean_up(1);
   my_thread_end();
+  sd_notify(0, "STATUS=MariaDB server is down");
 #if defined(SIGNALS_DONT_BREAK_READ)
   exit(0);
 #else
@@ -2062,6 +2065,7 @@ static void mysqld_exit(int exit_code)
   shutdown_performance_schema();        // we do it as late as possible
 #endif
   DBUG_LEAVE;
+  sd_notify(0, "STATUS=MariaDB server is down");
   exit(exit_code); /* purecov: inspected */
 }
 
@@ -6543,6 +6547,9 @@ void handle_connections_sockets()
   socket_flags=fcntl(mysql_socket_getfd(unix_sock), F_GETFL, 0);
 #endif
 
+  sd_notify(0, "READY=1\n"
+            "STATUS=Taking your SQL requests now...");
+
   DBUG_PRINT("general",("Waiting for connections."));
   MAYBE_BROKEN_SYSCALL;
   while (!abort_loop)
@@ -6757,6 +6764,8 @@ void handle_connections_sockets()
     create_new_thread(thd);
     set_current_thd(0);
   }
+  sd_notify(0, "STOPPING=1\n"
+            "STATUS=Shutdown in progress");
   DBUG_VOID_RETURN;
 }
 
