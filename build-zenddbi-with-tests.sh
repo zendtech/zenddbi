@@ -2,16 +2,17 @@ echo Building Mariadb
 pushd ~/server
 export export LDFLAGS="-Wl,-blibpath:/usr/local/mariadb/lib:/usr/lib:/lib -Wl,-bmaxdata:0x80000000 -Wl,-b64 -Wl,-bexpall,-Wno-attributes -Wl,-bexpfull -Wl,-bnoipath -Wl,-bbigtoc"
 cmake . -DCMAKE_BUILD_TYPE=Debug \
-    -DCMAKE_CXX_FLAGS_DEBUG="-O0 -g -mminimal-toc -mcpu=power7 -Wno-attributes -Wl,-bmaxdata:0x80000000" \
-    -DCMAKE_C_FLAGS_DEBUG="-O0 -g -mminimal-toc -mcpu=power7 -Wno-attributes -Wl,-bmaxdata:0x80000000" \
+    -DCMAKE_CXX_FLAGS_DEBUG="-O0 -g -mminimal-toc -mcpu=power7 -Wno-attributes" \
+    -DCMAKE_C_FLAGS_DEBUG="-O0 -g -mminimal-toc -mcpu=power7 -Wno-attributes" \
     -DCMAKE_INSTALL_PREFIX=/usr/local/mariadb \
     -DMYSQL_DATADIR=/usr/local/mariadbdata \
     -DCMAKE_BUILD_WITH_INSTALL_RPATH=TRUE \
     -DCMAKE_INSTALL_RPATH=/usr/local/mariadb/lib \
     -DWITH_EMBEDDED_SERVER=OFF \
     -DWITH_UNIT_TESTS=OFF \
-    -DINSTALL_MYSQLTESTDIR= \
+    -DINSTALL_MYSQLTESTDIR=mysql-test \
     -DPLUGIN_FEEDBACK=DYNAMIC \
+    -DPLUGIN_EXAMPLE=AUTO \
     -DPLUGIN_FILE_KEY_MANAGEMENT=NO \
     -DPLUGIN_FTEXAMPLE=DYNAMIC \
     -DPLUGIN_HANDLERSOCKET=DYNAMIC \
