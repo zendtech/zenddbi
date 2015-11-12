@@ -18,7 +18,7 @@
 
 #if defined(__i386__) || defined(_MSC_VER) || defined(__x86_64__)   \
     || defined(HAVE_GCC_ATOMIC_BUILTINS) \
-    || defined(HAVE_SOLARIS_ATOMIC)
+    || defined(HAVE_SOLARIS_ATOMIC) || defined(_POWER)
 
 #  ifdef MY_ATOMIC_MODE_DUMMY
 #    define LOCK_prefix ""
@@ -36,7 +36,10 @@
   choose the Solaris implementation on Solaris (mainly for SunStudio
   compilers).
 */
-#  if defined(_MSC_VER)
+// Use new C++X11 atomic operations on Power
+#  if defined(_POWER)
+#    include "gcc_libatomic.h"
+#  elif defined(_MSC_VER)
 #    include "generic-msvc.h"
 #  elif __GNUC__
 #    if defined(HAVE_SOLARIS_ATOMIC)
