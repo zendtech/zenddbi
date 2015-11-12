@@ -1,6 +1,6 @@
 echo Building Mariadb
 pushd ~/server
-export export LDFLAGS="-Wl,-blibpath:/usr/local/mariadb/lib:/usr/lib:/lib -Wl,-bmaxdata:0x80000000 -Wl,-b64 -Wl,-bexpall,-Wno-attributes -Wl,-bexpfull -Wl,-bnoipath -Wl,-bbigtoc"
+#export export LDFLAGS="-Wl,-blibpath:/usr/local/mariadb/lib:/usr/lib:/lib -Wl,-bmaxdata:0x80000000 -Wl,-b64 -Wl,-bexpall,-Wno-attributes -Wl,-bexpfull -Wl,-bnoipath -Wl,-bbigtoc"
 cmake . -DCMAKE_BUILD_TYPE=Debug \
     -DCMAKE_CXX_FLAGS_DEBUG="-O0 -g -mminimal-toc -mcpu=power7 -Wno-attributes" \
     -DCMAKE_C_FLAGS_DEBUG="-O0 -g -mminimal-toc -mcpu=power7 -Wno-attributes" \
@@ -19,7 +19,7 @@ cmake . -DCMAKE_BUILD_TYPE=Debug \
     -DPLUGIN_LOCALES=DYNAMIC \
     -DPLUGIN_METADATA_LOCK_INFO=DYNAMIC \
     -DPLUGIN_MYSQL_CLEAR_PASSWORD=DYNAMIC \
-    -DPLUGIN_PERFSCHEMA=NO \
+    -DPLUGIN_PERFSCHEMA=AUTO \
     -DPLUGIN_QA_AUTH_CLIENT=DYNAMIC \
     -DPLUGIN_QA_AUTH_INTERFACE=DYNAMIC \
     -DPLUGIN_QA_AUTH_SERVER=DYNAMIC \
@@ -92,12 +92,12 @@ make
 make package
 
 echo Adding dependent libraries to archive...
-#gzip -d mariadb-10.1.8-os400-powerpc.tar.gz && cp mariadb-10.1.8-os400-powerpc.tar /tmp/mariadb_i5os_install.tar
+#gzip -d mariadb-10.1.9-os400-powerpc.tar.gz && cp mariadb-10.1.9-os400-powerpc.tar /tmp/mariadb_i5os_install.tar
 #Extracting library to temporary directory
-cp mariadb-10.1.8-os400-powerpc.tar.gz /tmp
-pushd /tmp && rm -rf /tmp/mariadb-10.1.8-os400-powerpc
-tar xzf mariadb-10.1.8-os400-powerpc.tar.gz && cp /usr/zlocal/zenddbi/mariadb-libdeps/* mariadb-10.1.8-os400-powerpc/lib
-tar -cf mariadb_i5os_install.tar mariadb-10.1.8-os400-powerpc/
+cp mariadb-10.1.9-os400-powerpc.tar.gz /tmp
+pushd /tmp && rm -rf /tmp/mariadb-10.1.9-os400-powerpc
+tar xzf mariadb-10.1.9-os400-powerpc.tar.gz && cp /usr/zlocal/zenddbi/mariadb-libdeps/* mariadb-10.1.9-os400-powerpc/lib
+tar -cf mariadb_i5os_install.tar mariadb-10.1.9-os400-powerpc/
 echo Packaging mariadb...
 system MARIADBPCK
 echo Mariadb is packaged at QGPL/ZMYSQL
