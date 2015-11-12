@@ -1,9 +1,10 @@
 echo Building Mariadb
 pushd ~/server
-#export export LDFLAGS="-Wl,-blibpath:/usr/local/mariadb/lib:/usr/lib:/lib -Wl,-bmaxdata:0x80000000 -Wl,-b64 -Wl,-bexpall,-Wno-attributes -Wl,-bexpfull -Wl,-bnoipath -Wl,-bbigtoc"
+export export LDFLAGS="-Wl,-blibpath:/usr/local/mariadb/lib:/usr/lib:/lib -Wl,-bmaxdata:0x80000000 -Wl,-b64 -Wl,-bexpall,-Wno-attributes -Wl,-bexpfull -Wl,-bnoipath -Wl,-bbigtoc"
 cmake . -DCMAKE_BUILD_TYPE=Debug \
     -DCMAKE_CXX_FLAGS_DEBUG="-O0 -g -mminimal-toc -mcpu=power7 -Wno-attributes" \
     -DCMAKE_C_FLAGS_DEBUG="-O0 -g -mminimal-toc -mcpu=power7 -Wno-attributes" \
+    -DCMAKE_EXE_LINKER_FLAGS_DEBUG="-Wl,-blibpath:/usr/local/mariadb/lib:/usr/lib:/lib -Wl,-bmaxdata:0x80000000 -Wl,-bexpfull -Wl,-bnoipath -Wl,-bbigtoc" \
     -DCMAKE_INSTALL_PREFIX=/usr/local/mariadb \
     -DMYSQL_DATADIR=/usr/local/mariadbdata \
     -DCMAKE_BUILD_WITH_INSTALL_RPATH=TRUE \
@@ -36,6 +37,7 @@ cmake . -DCMAKE_BUILD_TYPE=Debug \
     -DPLUGIN_WSREP_INFO=DYNAMIC \
     -DPLUGIN_XTRADB=STATIC \
     -DPLUGIN_CONNECT=NO \
+    -DPLUGIN_AUTH_PAM=NO \
     -DDISABLE_SHARED=OFF \
     -DWITH_READLINE=OFF \
     -DCURSES_CURSES_H_PATH=/usr/include \
