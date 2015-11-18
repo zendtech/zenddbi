@@ -990,7 +990,8 @@ bool LEX::set_bincmp(CHARSET_INFO *cs, bool bin)
 bool my_yyoverflow(short **a, YYSTYPE **b, ulong *yystacksize);
 %}
 
-%pure_parser                                    /* We have threads */
+/*Use pure-parser instead of deprecated pure_parser - David Lowes */
+%pure-parser                                    /* We have threads */
 %parse-param { THD *thd }
 %lex-param { THD *thd }
 /*
