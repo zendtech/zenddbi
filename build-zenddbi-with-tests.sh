@@ -1,6 +1,6 @@
 echo Building Mariadb
-pushd ~/server
-export export LDFLAGS="-Wl,-blibpath:/usr/local/mariadb/lib:/usr/lib:/lib -Wl,-bmaxdata:0x80000000 -Wl,-bexpall,-Wno-attributes -Wl,-bexpfull -Wl,-bnoipath -Wl,-bbigtoc"
+#pushd ~/server
+export LDFLAGS="-Wl,-blibpath:/usr/local/mariadb/lib:/usr/lib:/lib -Wl,-bmaxdata:0x80000000 -Wl,-bexpall -Wl,-bexpfull -Wl,-bnoipath -Wl,-bbigtoc"
 export M4=/usr/local/bin/m4
 cmake . -DCMAKE_BUILD_TYPE=Debug \
     -DCMAKE_CXX_FLAGS_DEBUG="-O0 -g -mminimal-toc -mcpu=power7 -Wno-attributes" \
